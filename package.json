@@ -1,0 +1,14 @@
+{
+  "name": "game-hub-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Orchestrateur de session du portfolio Mathys Langiny : salon, joueurs, hote. Aucune regle de jeu.",
+  "main": "src/server.js",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node test-session.js && node test.js && node test-e2e.js"
+  },
+  "dependencies": { "ws": "^8.18.0" },
+  "license": "MIT"
+}
