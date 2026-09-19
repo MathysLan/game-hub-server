@@ -37,7 +37,9 @@ const appels = [];           // { id, method, upgrade }
 const santeSrv = createServer((req, res) => {
   const id = req.url.replace(/^\//, '').split('?')[0];
   appels.push({ id, method: req.method, upgrade: !!req.headers.upgrade });
+  // `seq` : une suite de codes, un par requête (un serveur qui se réveille).
   const c = sante[id] || { code: 200, delay: 0 };
+  if (Array.isArray(c.seq)) c.code = c.seq.length > 1 ? c.seq.shift() : c.seq[0];
   setTimeout(() => { res.writeHead(c.code); res.end(c.code === 200 ? 'ok' : 'ko'); }, c.delay);
 });
 
@@ -324,6 +326,24 @@ async function main() {
   c.send({ action: 'create', player: P('p_cccc', 'Chloé') });
   const nouv = (await c.waitFor((x) => x.type === 'created')).session;
   t('nouvelle session : historique vide, aucun tirage', nouv.history.played.length === 0 && nouv.draw === null && nouv.code !== code);
+
+  // ── un serveur qui SE RÉVEILLE n'est pas un serveur mort (mesuré en prod)
+  {
+    const H2 = createHealth({ timeoutMs: 3000, retryMs: 150, quiet: true });
+    sante.reveil = { seq: [503, 502, 503, 200], delay: 0 };
+    const avant = appels.length;
+    const t0 = Date.now();
+    const r1 = await H2.check({ id: 'reveil', mode: 'online', health: `http://127.0.0.1:${HPORT}/reveil` });
+    t('réveil : 503, 502, 503 puis 200 → « up » (réessais dans la fenêtre)', r1 === 'up' && appels.length - avant === 4,
+      `${appels.length - avant} requêtes, ${Date.now() - t0} ms`);
+    sante.mort = { code: 503, delay: 0 };
+    const t1 = Date.now();
+    const r2 = await H2.check({ id: 'mort', mode: 'online', health: `http://127.0.0.1:${HPORT}/mort` });
+    t('toujours 503 : « down » seulement à la fin de la fenêtre', r2 === 'down' && Date.now() - t1 >= 2900, `${Date.now() - t1} ms`);
+    const t2 = Date.now();
+    const r3 = await H2.check({ id: 'ferme', mode: 'online', health: 'http://127.0.0.1:45999/' });
+    t('connexion refusée (personne n\'écoute) : « down » tout de suite, sans réessai', r3 === 'down' && Date.now() - t2 < 1000, `${Date.now() - t2} ms`);
+  }
 
   // ── Hub sans catalogue : le salon vit, le tirage refuse proprement
   const hub2 = createHub({ heartbeatMs: 0 });

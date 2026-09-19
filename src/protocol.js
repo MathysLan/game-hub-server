@@ -35,6 +35,24 @@ const ERRORS = {
   BAD_PREFS: 'préférences invalides',
   BAD_CAPS: 'capacités invalides',
   BAD_CONSTRAINTS: 'contrainte invalide',
+  // Lancement (handoff).
+  NOT_LAUNCHING: 'aucun lancement en cours',
+  LAUNCH_MISMATCH: 'ce lancement ne correspond pas au tirage en cours',
+  LAUNCH_CONSUMED: 'le code de la partie a déjà été déclaré',
+  LAUNCH_EXPIRED: 'le lancement a expiré',
+  BAD_ROOM_CODE: 'code de partie mal formé',
+  WRONG_ROOM: 'ce n\'est pas la partie du groupe',
+};
+
+// Pourquoi un lancement échoue (launch.reason) : pas des erreurs de message,
+// mais l'issue d'un lancement, que le salon explique à tout le monde.
+const LAUNCH_FAILURES = {
+  LAUNCH_TIMEOUT: 'l\'hôte n\'a pas créé la partie à temps',
+  HOST_LEFT: 'l\'hôte a quitté la session avant de créer la partie',
+  UNREACHABLE: 'le serveur du jeu est injoignable',
+  SERVER_DOWN: 'le serveur du jeu est indisponible',
+  CREATE_FAILED: 'la partie n\'a pas pu être créée',
+  CANCELLED: 'l\'hôte a annulé le lancement',
 };
 
 // 32 Ko : un `create` porte au pire un avatar image (24 Ko de data-URL, plafond
@@ -44,7 +62,9 @@ const MAX_MESSAGE = 32 * 1024;
 
 // `draw` ne porte RIEN : le client demande « tire le prochain jeu », jamais
 // « choisis Passeur ». Un champ `gameId` ou `players` envoyé avec est ignoré.
-const ACTIONS = ['create', 'join', 'leave', 'prefs', 'caps', 'constraints', 'draw', 'continue'];
+const ACTIONS = ['create', 'join', 'leave', 'prefs', 'caps', 'constraints', 'draw', 'continue',
+  // Lancement : envoyés par la page DU JEU (games/shared/hub-handoff.js).
+  'launched', 'entered', 'started', 'ended', 'abort'];
 
 function parse(raw) {
   if (typeof raw !== 'string') raw = String(raw);
@@ -56,4 +76,4 @@ function parse(raw) {
   return { msg };
 }
 
-module.exports = { ERRORS, ACTIONS, MAX_MESSAGE, parse };
+module.exports = { ERRORS, LAUNCH_FAILURES, ACTIONS, MAX_MESSAGE, parse };

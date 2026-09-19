@@ -11,6 +11,8 @@
 //   - `since`, `graceMs`, les minuteries, et tout ce qui viendra après.
 'use strict';
 
+const { publicLaunch } = require('./launch.js');
+
 // L'avatar part en entier, image comprise : une session de Hub n'est pas un
 // protocole de jeu, et c'est le Hub qui affichera les photos. Le jour du
 // handoff, seul l'emoji partira vers le serveur du jeu — ce n'est pas le même
@@ -58,6 +60,7 @@ function publicSession(s, pool) {
     constraints: { maxMinutes: s.constraints ? s.constraints.maxMinutes : null },
     draw: publicDraw(s.draw),
     history: { played: s.history.played.slice(), usedContent: s.history.usedContent },
+    launch: publicLaunch(s.launch, Date.now()),
     pool: pool || null,
   };
 }

@@ -23,8 +23,8 @@ Volontairement absents :
 
 | | |
 |---|---|
-| handoff vers un jeu, jeton de lancement | phase suivante |
-| score cumulé de soirée, retour du jeu au Hub | avec le handoff |
+| handoff des SIX autres jeux (seul Le Passeur est branché) | phases suivantes |
+| score cumulé de soirée | phase suivante |
 | historique de CONTENU (`usedContent`), rejouer | phases tardives |
 | compte, authentification, base de données | jamais |
 | matchmaking public | jamais — c'est un Hub entre amis |
@@ -116,7 +116,12 @@ renvoie `{ type }`, en JSON sur un seul socket.
 | `caps` | `caps` (`{ mic: true }`) | ses PROPRES capacités, déclaratives |
 | `constraints` | `maxMinutes` (ou `null`) | **hôte** — durée maximale d'un jeu |
 | `draw` | — | **hôte** — « tire le prochain jeu ». Aucun autre champ n'est lu |
-| `continue` | — | **hôte** — prend acte du jeu tiré |
+| `continue` | — | **hôte** — prend acte du jeu tiré (et lance le handoff si le jeu le sait) |
+| `launched` | `drawId`, `roomCode` | **hôte du lancement** — sa page de jeu a créé la room |
+| `entered` | `drawId`, `roomCode` | chacun — sa page de jeu est entrée dans CETTE room |
+| `started` | `drawId` | **hôte du lancement** — la partie a démarré |
+| `ended` | `drawId` | **hôte** — la partie est finie, retour au Hub |
+| `abort` | `drawId`, `reason`, `detail` | création/entrée impossible, ou annulation (hôte) |
 
 ### Serveur → client
 
@@ -131,6 +136,9 @@ renvoie `{ type }`, en JSON sur un seul socket.
 constraints, draw, history, pool }`. Ni socket, ni identifiant interne.
 `pool` = ce que le moteur dit du catalogue pour CE groupe, recalculé à chaque
 diffusion : `{ catalog, games[], eligible[], why{}, weights{}, health{} }`.
+`launch` = le lancement en cours : `{ drawId, gameId, url, stage, hostId,
+roomCode, expected[], entered[], waiting[], missed[], failed{}, reason,
+expiresInMs }` (null hors lancement).
 Un `error` `NO_ELIGIBLE_GAME` porte en plus `why`.
 
 ### Erreurs
@@ -159,6 +167,12 @@ proposer la bonne suite. Le `message` humain reste au même endroit.
 | `MANIFEST_UNAVAILABLE` | catalogue illisible et aucun ancien en mémoire |
 | `DRAW_FAILED` | erreur interne pendant un tirage (la session revient à son état) |
 | `BAD_PREFS` / `BAD_CAPS` / `BAD_CONSTRAINTS` | réglage mal formé |
+| `NOT_LAUNCHING` | aucun lancement en cours (ou déjà fini) |
+| `LAUNCH_MISMATCH` | ce lancement ne correspond pas au tirage courant |
+| `LAUNCH_CONSUMED` | le code a déjà été déclaré (usage unique) |
+| `LAUNCH_EXPIRED` | déclaré après l'échéance |
+| `BAD_ROOM_CODE` | code de room mal formé |
+| `WRONG_ROOM` | ce n'est pas la room du groupe |
 
 ## Décisions, et pourquoi
 
@@ -291,10 +305,52 @@ liste éligible soit connue.
 
 Un **GET** sur l'URL `health` du manifest, rien d'autre : le Hub n'ouvre
 **jamais** de WebSocket vers un serveur de jeu. `up` (2xx) vaut 5 min, `down`
-(autre code, ou rien en 40 s) écarte le jeu 2 min. Pré-réveil à la création
+(rien de 2xx avant 40 s) écarte le jeu 2 min.
+
+⚠️ **Un serveur qui se réveille n'est pas un serveur mort.** Mesuré en
+production le 2026-09-19 : depuis Render, le Hub déclarait les sept jeux
+« down » en moins d'une seconde et le tirage ne trouvait AUCUN jeu — alors que
+les mêmes URL répondaient 200 en 12 à 22 s vues d'ailleurs (le temps du réveil
+Render). Dans la fenêtre de 40 s, une réponse non-2xx ou une erreur réseau
+n'est donc plus un verdict : on réessaie toutes les 2,5 s. Seules une connexion
+refusée et un nom inconnu tranchent tout de suite. La raison du dernier échec
+est écrite dans les journaux (`[santé] passeur injoignable après 40 s : …`). Pré-réveil à la création
 d'une session ; revérification avant chaque tirage si ce n'est plus frais. Un
 jeu en cours de vérification n'est pas écarté du salon (il se réveille), mais
 seul un jeu vu vivant peut être **tiré**.
+
+## Handoff : lancer le jeu tiré
+
+Le Hub n'ouvre **jamais** de WebSocket vers un serveur de jeu. Il orchestre des
+navigateurs, qui parlent au jeu par son protocole habituel :
+
+```
+tirage → continue (hôte)      → stage 'create'   l'hôte ouvre le jeu
+la page du jeu crée la room   → launched         stage 'join', le code part à tous
+chaque invité rejoint le code → entered          quand tout le monde est là :
+                              → stage 'playing'  état inGame
+fin de partie                 → ended            état debrief, prêt à retirer
+échec / annulation            → stage 'failed'   retour au salon, avec la raison
+```
+
+- Un jeu n'est lancé que s'il déclare `handoff: true` dans le manifest — c'est
+  à dire si sa page sait être lancée (`games/shared/hub-handoff.js`). Sinon,
+  `continue` revient au Hub comme avant.
+- **Pas de jeton secret, et c'est délibéré.** L'autorité vient du SOCKET : seul
+  l'hôte DU LANCEMENT (figé à `continue`) peut déclarer un code. Le lancement
+  est lié au tirage courant (`drawId`), borné dans le temps et à usage unique —
+  un jeton n'ajouterait rien à ces trois règles. Un invité qui déclare un code
+  reçoit `NOT_HOST` ; un code qui n'est pas celui du groupe, `WRONG_ROOM`.
+- Le Hub ne vérifie pas qu'une room existe (il ne parle pas au jeu) : c'est le
+  premier invité qui le découvre, et son `abort` le dit au groupe.
+- **Délais** : 90 s pour créer la room (sinon `LAUNCH_TIMEOUT`, retour au
+  salon), puis 120 s pour que les invités entrent (sinon la partie est lancée
+  sans eux, qui sont « manqués » et nommés).
+- **L'hôte garde son rôle pendant tout le cycle**, même absent : il est en train
+  de naviguer vers le jeu, dans le même onglet. Il ne le perd qu'en partant
+  vraiment (leave, ou fin de sa grâce). Même règle au retour de partie.
+- **Une session sans personne de connecté n'est PAS fermée** pendant
+  `launching` / `inGame` : tout le groupe navigue en même temps.
 
 ## HTTP
 
@@ -317,6 +373,7 @@ plus parler à un serveur ancien — pas à chaque correctif.
 | `src/serialize.js` | l'état public (liste **blanche**) | non |
 | `src/protocol.js` | messages acceptés, codes d'erreur | non |
 | `src/engine.js` | **le moteur de tirage** : filtre, poids, tirage — pur | non |
+| `src/launch.js` | **le lancement** : états, validations, attente — pur | non |
 | `src/prefs.js` | validation de prefs, caps, contrainte | non |
 | `src/catalog.js` | lecture et validation du manifest | HTTP (GET) |
 | `src/health.js` | santé des serveurs de jeu | HTTP (GET) |
@@ -336,8 +393,12 @@ node test-session.js   # 41 — modèle pur, sans réseau
 node test-engine.js    # 65 — moteur de tirage pur, sur les valeurs du manifest réel
 node test.js           # 37 — protocole, vraies connexions WebSocket
 node test-presence.js  # 23 — heartbeat, leave, coupures, reprises (vraies connexions)
-node test-draw.js      # 54 — randomizer sur vraies connexions : prefs, caps, tirage,
-                       #      concurrence, reconnexion, serveur malade, sécurité
+node test-draw.js      # 57 — randomizer sur vraies connexions : prefs, caps, tirage,
+                       #      concurrence, reconnexion, serveur malade ou qui se
+                       #      réveille, sécurité
+node test-launch.js    # 43 — le lancement, module pur
+node test-handoff.js   # 42 — le lancement sur vraies connexions : rôles, codes,
+                       #      concurrence, délais, échecs, changement d'hôte
 node test-e2e.js       # 26 — le vrai serveur, HTTP et tirage compris
 ```
 

@@ -11,8 +11,9 @@ const E = require('./engine.js');
 const { newCode, normalizeCode } = require('./codes.js');
 const { readPlayer } = require('./identity.js');
 const { readPrefs, readCaps, readConstraints } = require('./prefs.js');
+const L = require('./launch.js');
 const { publicSession } = require('./serialize.js');
-const { ERRORS, parse } = require('./protocol.js');
+const { ERRORS, LAUNCH_FAILURES, parse } = require('./protocol.js');
 
 // ── Heartbeat ─────────────────────────────────────────────────────────────
 // Sans lui, une connexion MORTE (téléphone passé en mode avion, Wi-Fi coupé,
@@ -64,7 +65,9 @@ function createHub(options = {}) {
   const catalog = options.catalog || NO_CATALOG;
   const health = options.health || NO_HEALTH;
   const random = options.random || cryptoRandom;
+  const launchOpts = { createMs: options.launchCreateMs, joinMs: options.launchJoinMs };
   const graceTimers = new Map();       // `code/playerId` → timer
+  const launchTimers = new Map();      // code de session → échéance du lancement en cours
   const connections = new Set();       // tous les sockets vivants, en session ou non
 
   // Un tour de heartbeat : couper ce qui n'a pas répondu depuis le tour
@@ -133,6 +136,8 @@ function createHub(options = {}) {
 
   function closeSession(session) {
     session.state = 'closed';
+    clearTimeout(launchTimers.get(session.code));
+    launchTimers.delete(session.code);
     for (const key of [...graceTimers.keys()]) {
       if (key.startsWith(session.code + '/')) {
         clearTimeout(graceTimers.get(key));
@@ -151,6 +156,7 @@ function createHub(options = {}) {
     session.sockets.delete(playerId);
     graceTimers.delete(session.code + '/' + playerId);
     if (!session.players.length) return closeSession(session);
+    playerGone(session, playerId);
     S.electHost(session);
     broadcastSession(session);
   }
@@ -243,6 +249,7 @@ function createHub(options = {}) {
     if (graceTimers.has(key)) { clearTimeout(graceTimers.get(key)); graceTimers.delete(key); }
     S.removePlayer(session, playerId);
     if (!S.connectedPlayers(session).length) return closeSession(session);
+    playerGone(session, playerId);
     S.electHost(session);
     broadcastSession(session);
   }
@@ -263,7 +270,11 @@ function createHub(options = {}) {
     const p = S.getPlayer(session, playerId);
     if (p) p.connected = false;
 
-    if (!S.connectedPlayers(session).length) return closeSession(session);
+    // ⚠️ Pendant un lancement ou une partie, un groupe entier peut être
+    // déconnecté du Hub une seconde : chacun navigue vers le jeu, dans le même
+    // onglet. On ne ferme donc PAS la session vide ; les délais de grâce
+    // individuels (plus bas) s'en chargeront si personne ne revient.
+    if (!S.connectedPlayers(session).length && !S.HANDOFF_STATES.includes(session.state)) return closeSession(session);
 
     S.electHost(session);
     broadcastSession(session);
@@ -344,7 +355,7 @@ function createHub(options = {}) {
     if (session.state === 'drawing') return fail(ws, 'DRAW_IN_PROGRESS');
     if (session.state !== 'lobby' && session.state !== 'debrief') return fail(ws, 'DRAW_IN_PROGRESS');
 
-    const avant = { state: session.state, draw: session.draw };
+    const avant = { state: session.state, draw: session.draw, launch: session.launch };
     const draw = {
       id: 'd_' + crypto.randomBytes(6).toString('hex'),
       n: session.drawCount + 1,
@@ -355,6 +366,7 @@ function createHub(options = {}) {
     };
     session.state = 'drawing';
     session.draw = draw;
+    session.launch = null;           // un nouveau tirage efface le lancement précédent (raté ou fini)
     broadcastSession(session);
 
     // Un tirage annulé rend la session exactement comme elle était.
@@ -362,6 +374,7 @@ function createHub(options = {}) {
       if (sessions.get(session.code) !== session || session.draw !== draw) return;
       session.state = avant.state;
       session.draw = avant.draw;
+      session.launch = avant.launch;
       fail(ws, code, extra);
       broadcastSession(session);
     };
@@ -411,8 +424,165 @@ function createHub(options = {}) {
     if (session.hostId !== player.id) return fail(ws, 'NOT_HOST');
     if (session.state !== 'drawing' || !session.draw || session.draw.status !== 'drawn') return fail(ws, 'NOT_DRAWN');
     session.draw.status = 'confirmed';
-    session.state = 'debrief';
+    const games = catalog.get() || [];
+    const game = games.find((g) => g.id === session.draw.gameId);
+    // Un jeu qui ne sait pas être lancé par le Hub (handoff: false dans le
+    // manifest) : on revient au Hub, comme avant — le jeu est tiré, pas lancé.
+    if (!game || !game.handoff || !game.url) {
+      session.state = 'debrief';
+      return broadcastSession(session);
+    }
+    // Le lancement. Un serveur déjà vu mort n'est même pas tenté.
+    session.launch = L.create(session, session.draw, game, Date.now(), launchOpts);
+    session.state = 'launching';
+    if ((health.snapshot([game])[game.id] || 'up') === 'down') return failLaunch(session, 'SERVER_DOWN');
+    armLaunchTimer(session);
     broadcastSession(session);
+  }
+
+  // ── Lancement (handoff) ─────────────────────────────────────────────────
+  // Tous ces messages viennent de la page DU JEU (games/shared/hub-handoff.js),
+  // qui s'est reconnectée au Hub avec le même player.id. Le Hub ne parle
+  // jamais au serveur du jeu : il enregistre ce que les navigateurs déclarent,
+  // et ne croit un code de room que de l'hôte du lancement.
+
+  // Une échéance par lancement : créer la room, puis y faire entrer le groupe.
+  function armLaunchTimer(session) {
+    clearTimeout(launchTimers.get(session.code));
+    const l = session.launch;
+    if (!l || (l.stage !== 'create' && l.stage !== 'join')) return launchTimers.delete(session.code);
+    const t = setTimeout(() => {
+      launchTimers.delete(session.code);
+      if (sessions.get(session.code) !== session || session.launch !== l) return;
+      if (l.stage === 'create') return failLaunch(session, 'LAUNCH_TIMEOUT');
+      if (l.stage === 'join') { L.applyPlaying(l); session.state = 'inGame'; broadcastSession(session); }
+    }, Math.max(0, l.deadline - Date.now()));
+    if (t.unref) t.unref();
+    launchTimers.set(session.code, t);
+  }
+
+  // Un lancement raté ramène TOUJOURS le groupe au salon, avec la raison.
+  // Rien n'est effacé : le tirage reste dans l'historique, et l'hôte peut
+  // retirer tout de suite.
+  function failLaunch(session, reason) {
+    const l = session.launch;
+    if (!l) return;
+    clearTimeout(launchTimers.get(session.code));
+    launchTimers.delete(session.code);
+    L.fail(l, reason);
+    session.state = 'lobby';
+    S.electHost(session);
+    broadcastSession(session);
+  }
+
+  // Tous ceux qu'on attendait sont entrés : la partie est lancée.
+  function maybePlaying(session) {
+    const l = session.launch;
+    if (l && l.stage === 'join' && !L.waiting(l).length) {
+      L.applyPlaying(l);
+      session.state = 'inGame';
+      armLaunchTimer(session);
+    }
+  }
+
+  // Un joueur quitte la session (volontairement, ou fin de sa grâce).
+  function playerGone(session, playerId) {
+    const l = session.launch;
+    if (!l || !S.HANDOFF_STATES.includes(session.state)) return;
+    // L'hôte part avant d'avoir créé la room : personne d'autre ne peut la
+    // créer à sa place (seul le porteur du lancement le peut). On libère le
+    // groupe, qui a un nouvel hôte et peut retirer.
+    if (l.stage === 'create' && playerId === l.hostId) return failLaunch(session, 'HOST_LEFT');
+    L.forget(l, playerId);
+    maybePlaying(session);
+  }
+
+  // L'hôte a créé la room et en déclare le code.
+  function onLaunched(ws, msg) {
+    const m = me(ws);
+    if (!m) return fail(ws, 'NOT_IN_SESSION');
+    const { session, player } = m;
+    const l = session.launch;
+    const r = L.checkLaunched(l, player.id, msg, Date.now());
+    if (r.error) return fail(ws, r.error);
+    L.applyLaunched(l, r.code, Date.now(), launchOpts);
+    maybePlaying(session);
+    armLaunchTimer(session);
+    broadcastSession(session);
+  }
+
+  // Un joueur est entré dans LA room du lancement.
+  function onEntered(ws, msg) {
+    const m = me(ws);
+    if (!m) return fail(ws, 'NOT_IN_SESSION');
+    const { session, player } = m;
+    const l = session.launch;
+    const r = L.checkEntered(l, player.id, msg);
+    if (r.error) return fail(ws, r.error);
+    L.applyEntered(l, player.id);
+    maybePlaying(session);
+    broadcastSession(session);
+  }
+
+  // L'hôte a démarré la partie sans attendre tout le monde.
+  function onStarted(ws, msg) {
+    const m = me(ws);
+    if (!m) return fail(ws, 'NOT_IN_SESSION');
+    const l = m.session.launch;
+    if (!l || !msg || msg.drawId !== l.drawId) return fail(ws, 'LAUNCH_MISMATCH');
+    if (m.player.id !== l.hostId) return fail(ws, 'NOT_HOST');
+    if (l.stage === 'playing') return;
+    if (l.stage !== 'join') return fail(ws, 'NOT_LAUNCHING');
+    L.applyPlaying(l);
+    m.session.state = 'inGame';
+    armLaunchTimer(m.session);
+    broadcastSession(m.session);
+  }
+
+  // La partie est finie : retour au Hub, prêt pour le tirage suivant. Pas de
+  // score de soirée à cette phase — c'est ici qu'il viendra se brancher.
+  function onEnded(ws, msg) {
+    const m = me(ws);
+    if (!m) return fail(ws, 'NOT_IN_SESSION');
+    const { session, player } = m;
+    const l = session.launch;
+    if (!l || !msg || msg.drawId !== l.drawId) return fail(ws, 'LAUNCH_MISMATCH');
+    if (player.id !== l.hostId && player.id !== session.hostId) return fail(ws, 'NOT_HOST');
+    if (!S.HANDOFF_STATES.includes(session.state)) return;
+    clearTimeout(launchTimers.get(session.code));
+    launchTimers.delete(session.code);
+    l.stage = 'ended';
+    session.state = 'debrief';
+    S.electHost(session);
+    broadcastSession(session);
+  }
+
+  // Quelque chose a échoué côté jeu. L'hôte qui ne peut pas créer la room
+  // fait échouer le lancement ; un invité qui ne peut pas entrer n'échoue que
+  // pour lui (on ne laisse pas un invité annuler la partie des autres).
+  // « Injoignable » écarte en plus le jeu des tirages le temps d'un down.
+  function onAbort(ws, msg) {
+    const m = me(ws);
+    if (!m) return fail(ws, 'NOT_IN_SESSION');
+    const { session, player } = m;
+    const l = session.launch;
+    if (!l || !msg || msg.drawId !== l.drawId) return fail(ws, 'LAUNCH_MISMATCH');
+    if (l.stage !== 'create' && l.stage !== 'join') return fail(ws, 'NOT_LAUNCHING');
+    // L'hôte change d'avis : il annule, le groupe revient au salon et peut
+    // retirer tout de suite (sans attendre l'échéance du lancement).
+    if (msg.reason === 'CANCELLED') {
+      if (player.id !== l.hostId && player.id !== session.hostId) return fail(ws, 'NOT_HOST');
+      return failLaunch(session, 'CANCELLED');
+    }
+    const reason = msg.reason === 'UNREACHABLE' ? 'UNREACHABLE' : 'CREATE_FAILED';
+    if (reason === 'UNREACHABLE' && health.markDown) health.markDown(l.gameId);
+    if (player.id === l.hostId && l.stage === 'create') return failLaunch(session, reason);
+    if (player.id !== l.hostId) {
+      l.failed[player.id] = typeof msg.detail === 'string' ? msg.detail.slice(0, 120) : reason;
+      maybePlaying(session);
+      return broadcastSession(session);
+    }
+    fail(ws, 'NOT_LAUNCHING');
   }
 
   function onMessage(ws, raw) {
@@ -431,6 +601,11 @@ function createHub(options = {}) {
     if (a === 'constraints') return onConstraints(ws, r.msg);
     if (a === 'draw') return onDraw(ws);
     if (a === 'continue') return onContinue(ws);
+    if (a === 'launched') return onLaunched(ws, r.msg);
+    if (a === 'entered') return onEntered(ws, r.msg);
+    if (a === 'started') return onStarted(ws, r.msg);
+    if (a === 'ended') return onEnded(ws, r.msg);
+    if (a === 'abort') return onAbort(ws, r.msg);
   }
 
   function connection(ws) {
@@ -460,4 +635,4 @@ function createHub(options = {}) {
   };
 }
 
-module.exports = { createHub, HEARTBEAT_MS };
+module.exports = { createHub, HEARTBEAT_MS, LAUNCH_FAILURES };

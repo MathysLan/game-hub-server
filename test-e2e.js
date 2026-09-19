@@ -25,7 +25,7 @@ const jeu = (id, min, max, mmax, needs = [], health = ICI) => ({ id, title: id, 
 const MANIFEST = path.join(os.tmpdir(), `hub-e2e-manifest-${process.pid}.json`);
 fs.writeFileSync(MANIFEST, JSON.stringify({ version: 1, games: [
   jeu('morpion', 2, 2, 5), jeu('imitation', 2, 8, 15, ['mic']), jeu('demicercle', 2, 10, 15),
-  jeu('precision', 1, 12, 10, [], 'http://127.0.0.1:9/'), jeu('passeur', 1, 8, 8), jeu('quiment', 3, 8, 15),
+  jeu('precision', 1, 12, 10, [], 'http://127.0.0.1:45999/'), jeu('passeur', 1, 8, 8), jeu('quiment', 3, 8, 15),
 ] }));
 process.env.MANIFEST_FILE = MANIFEST;
 process.on('exit', () => { try { fs.unlinkSync(MANIFEST); } catch (_) {} });

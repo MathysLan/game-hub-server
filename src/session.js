@@ -10,20 +10,27 @@
 // fichier, c'est que la frontière a bougé au mauvais endroit.
 'use strict';
 
-// Les six états prévus. Le randomizer en fait vivre quatre :
-//   lobby    le salon ;
-//   drawing  un tirage est demandé puis révélé (draw.status pending → drawn) ;
-//   debrief  le jeu tiré est confirmé : on est de retour au Hub, prêt pour la
-//            suite (le lancement viendra avec le handoff) ou le tirage suivant ;
-//   closed   fin.
-// `launching` et `inGame` restent représentables pour le handoff, mais aucune
-// transition ne les atteint encore.
+// Les six états :
+//   lobby      le salon (et le retour au salon après un lancement raté) ;
+//   drawing    un tirage est demandé puis révélé (draw.status pending → drawn) ;
+//   launching  le jeu tiré se lance : l'hôte crée la room, les invités la
+//              rejoignent (voir launch.js) ;
+//   inGame     la partie est lancée ;
+//   debrief    retour au Hub : jeu tiré non lançable, ou partie terminée —
+//              prêt pour le tirage suivant ;
+//   closed     fin.
 const STATES = ['lobby', 'drawing', 'launching', 'inGame', 'debrief', 'closed'];
 
-// On entre dans une session tant qu'elle vit au Hub : au salon, pendant un
-// tirage, ou entre deux tirages. Le tirage en cours n'en est pas modifié — il
-// a été calculé sur le groupe du moment.
-const OPEN_STATES = ['lobby', 'drawing', 'debrief'];
+// On entre dans une session tant qu'elle vit : un ami qui arrive en retard
+// rejoint le Hub même pendant un lancement ou une partie (il pourra entrer
+// dans la room si elle accepte encore du monde). Le tirage en cours n'en est
+// pas modifié — il a été calculé sur le groupe du moment.
+const OPEN_STATES = ['lobby', 'drawing', 'launching', 'inGame', 'debrief'];
+// Pendant un lancement ou une partie, TOUT le monde peut être momentanément
+// déconnecté : on navigue du Hub vers le jeu (même onglet). Une session sans
+// joueur connecté n'est donc PAS fermée sur-le-champ dans ces deux états — les
+// délais de grâce individuels s'en chargent.
+const HANDOFF_STATES = ['launching', 'inGame'];
 
 // 12 et pas 8 : c'est le MAX_PLAYERS de precision-server, le plus permissif des
 // sept (relevé dans src/server.js). Plafonner le Hub à 8 interdirait une
@@ -58,6 +65,8 @@ function createSession(code, options = {}) {
     history: { played: [], usedContent: {} },
     // Réglée par l'hôte : plafond de durée comparé au minutes.max du manifest.
     constraints: { maxMinutes: null },
+    // Le lancement du jeu tiré (launch.js), ou null.
+    launch: null,
     maxPlayers: options.maxPlayers || MAX_PLAYERS,
     graceMs: options.graceMs == null ? GRACE_MS : options.graceMs,
   };
@@ -100,6 +109,19 @@ function removePlayer(s, id) {
 // joueur ENCORE CONNECTÉ. Pas de vote, pas de permissions — le créateur est
 // hôte parce qu'il est arrivé le premier, exactement comme dans les sept jeux.
 function electHost(s) {
+  // Pendant un lancement ou une partie, l'hôte DU LANCEMENT reste hôte tant
+  // qu'il est dans la session, même absent : il est seulement en train de
+  // naviguer vers le jeu (même onglet, son socket du Hub se ferme). Il ne
+  // perd la main que s'il part vraiment (leave, ou fin de son délai de grâce).
+  // Même règle au RETOUR, juste après la partie (debrief d'un lancement fini) :
+  // chacun revient du jeu au Hub dans le même onglet, donc passe par un instant
+  // « absent ». Contrepartie : un hôte qui ne revient jamais garde la main
+  // jusqu'à la fin de sa grâce (60 s), puis elle passe au suivant.
+  const cycle = HANDOFF_STATES.includes(s.state) || (s.state === 'debrief' && s.launch && s.launch.stage === 'ended');
+  if (cycle && s.launch && getPlayer(s, s.launch.hostId)) {
+    s.hostId = s.launch.hostId;
+    return s.hostId;
+  }
   const vivants = connectedPlayers(s);
   if (!vivants.length) {
     // On ne met pas hostId à null tant qu'il reste des joueurs absents : ils
@@ -114,6 +136,6 @@ function electHost(s) {
 }
 
 module.exports = {
-  STATES, OPEN_STATES, MAX_PLAYERS, GRACE_MS,
+  STATES, OPEN_STATES, HANDOFF_STATES, MAX_PLAYERS, GRACE_MS,
   createSession, addPlayer, removePlayer, getPlayer, connectedPlayers, electHost,
 };

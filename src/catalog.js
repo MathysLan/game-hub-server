@@ -50,8 +50,14 @@ function readGame(g) {
     server: g.mode === 'online' ? g.server : null,
     health: g.mode === 'online' ? g.health : null,
     join: typeof g.join === 'string' ? g.join : null,
+    // L'adresse de la page du jeu, relative à la racine du portfolio : c'est
+    // là que le lancement envoie les joueurs.
+    url: typeof g.url === 'string' && /^games\/[a-z0-9-]+\/$/.test(g.url) ? g.url : null,
     content: g.content === true,
     replay: g.replay === true,
+    // La page du jeu sait-elle être lancée par le Hub ? Absent = non : le Hub
+    // tire le jeu mais ne le lance pas (comportement d'avant le handoff).
+    handoff: g.handoff === true,
   };
 }
 
