@@ -155,9 +155,31 @@ avant le handoff.
 
 ### Déconnexion ≠ départ
 
-Fermer un socket marque le joueur **absent** et le garde visible 60 secondes.
-Mais si **plus personne** n'est connecté, la session est supprimée
-immédiatement — inutile de garder en mémoire un salon que personne ne regarde.
+| Événement | Effet |
+|---|---|
+| **coupure réseau** (socket fermé, ou coupé par le heartbeat) | joueur **absent**, gardé **60 s** ; il reprend sa place en rejouant `join` avec le même `player.id` |
+| **`leave`** (départ volontaire) | joueur **retiré tout de suite**, sans délai de grâce |
+| plus **aucun joueur connecté** après l'un ou l'autre | session **supprimée immédiatement**, absents compris |
+
+La dernière ligne vaut pour les deux chemins : un salon où il ne reste que des
+absents n'a plus de participant volontairement présent. Jusqu'au 2026-09-19,
+un `leave` n'appliquait pas cette règle et la session survivait 60 s pour un
+absent.
+
+### Heartbeat : un ping toutes les 20 s
+
+Une connexion morte (mode avion, Wi-Fi coupé, onglet tué par l'OS) n'envoie
+aucune trame de fermeture : sans heartbeat, le joueur restait « connecté »
+jusqu'à ce que TCP abandonne. Le serveur envoie un **ping WebSocket natif**
+toutes les **20 s** ; une connexion qui n'a pas répondu au ping précédent est
+coupée au tour suivant (`terminate()`), donc **détectée en 20 à 40 s**, puis
+traitée comme n'importe quelle coupure (absent, grâce, reprise).
+
+Pourquoi 20 s : assez court pour que le salon soit juste avant un lancement,
+assez long pour ne rien coûter (2 octets par joueur) et laisser une connexion
+lente répondre. Le navigateur répond aux pings dans sa pile réseau, sans code
+côté page — même un onglet en arrière-plan. Un trafic régulier évite aussi
+qu'un proxy ferme une connexion jugée inactive.
 
 ⚠️ Conséquence : un hôte seul qui recharge sa page perd sa session. C'est le
 comportement demandé (« suppression de la session quand le dernier joueur
@@ -214,8 +236,12 @@ ajoutant un champ au modèle.
 ```bash
 node test-session.js   # 41 — modèle pur, sans réseau
 node test.js           # 37 — protocole, vraies connexions WebSocket
+node test-presence.js  # 23 — heartbeat, leave, coupures, reprises (vraies connexions)
 node test-e2e.js       # 20 — le vrai serveur, HTTP compris
 ```
+
+`test-presence.js` simule une connexion MORTE avec un client `ws` créé en
+`autoPong: false` : il ne répond plus aux pings, comme un téléphone hors ligne.
 
 `test.js` monte le hub à la main pour raccourcir le délai de grâce à 200 ms ;
 c'est `test-e2e.js` qui démarre **`src/server.js` tel quel** — sans lui,

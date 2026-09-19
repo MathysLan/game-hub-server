@@ -11,10 +11,56 @@ const { readPlayer } = require('./identity.js');
 const { publicSession } = require('./serialize.js');
 const { ERRORS, parse } = require('./protocol.js');
 
+// ── Heartbeat ─────────────────────────────────────────────────────────────
+// Sans lui, une connexion MORTE (téléphone passé en mode avion, Wi-Fi coupé,
+// onglet tué par l'OS) ne se signale jamais : aucune trame de fermeture
+// n'arrive, et le joueur resterait « connecté » pour les autres jusqu'à ce que
+// TCP abandonne — de longues minutes.
+//
+// Mécanisme : le ping/pong NATIF de WebSocket (ws.ping(), événement 'pong').
+// Le navigateur y répond lui-même, dans sa pile réseau : aucun code côté page,
+// et un onglet en arrière-plan dont le JavaScript est ralenti répond quand même.
+//
+// Fréquence : un ping toutes les 20 s. Une connexion qui n'a pas répondu au
+// ping précédent est coupée au tour suivant : une connexion morte est donc
+// détectée en 20 à 40 s. Assez vite pour que le salon soit juste avant un
+// lancement de partie ; pas agressif pour autant — une trame de 2 octets par
+// joueur toutes les 20 s, et une connexion lente a 20 s entières pour répondre.
+// (Bonus : un trafic régulier évite que les proxys ferment une connexion jugée
+// inactive.)
+//
+// Une connexion coupée par le heartbeat passe par le MÊME chemin qu'une
+// fermeture ordinaire (onClose) : joueur marqué absent, délai de grâce, reprise
+// possible avec le même player.id.
+const HEARTBEAT_MS = 20_000;
+
 function createHub(options = {}) {
   const sessions = new Map();          // code → session
   const graceMs = options.graceMs == null ? S.GRACE_MS : options.graceMs;
+  const heartbeatMs = options.heartbeatMs == null ? HEARTBEAT_MS : options.heartbeatMs;
   const graceTimers = new Map();       // `code/playerId` → timer
+  const connections = new Set();       // tous les sockets vivants, en session ou non
+
+  // Un tour de heartbeat : couper ce qui n'a pas répondu depuis le tour
+  // précédent, puis relancer un ping à tous les autres.
+  function beat() {
+    for (const ws of connections) {
+      if (ws.isAlive === false) {
+        // terminate() et non close() : une connexion morte ne répondra pas à la
+        // poignée de main de fermeture. L'événement 'close' suit, et onClose
+        // fait le reste.
+        try { ws.terminate(); } catch (_) { /* déjà partie */ }
+        continue;
+      }
+      ws.isAlive = false;
+      try { ws.ping(); } catch (_) { /* le close suivra */ }
+    }
+  }
+  let heartbeat = null;
+  if (heartbeatMs > 0) {
+    heartbeat = setInterval(beat, heartbeatMs);
+    if (heartbeat.unref) heartbeat.unref();   // ne retient pas le process en vie
+  }
 
   const send = (ws, obj) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); };
   const fail = (ws, code) => send(ws, { type: 'error', code, message: ERRORS[code] || code });
@@ -116,12 +162,28 @@ function createHub(options = {}) {
     broadcastSession(session);
   }
 
+  // `leave` = départ VOLONTAIRE, à distinguer d'une coupure réseau :
+  //   - le joueur est retiré tout de suite (pas de délai de grâce : il ne
+  //     reviendra pas, il l'a dit) ;
+  //   - s'il ne reste plus AUCUN joueur connecté — seulement des absents en
+  //     délai de grâce, ou personne —, la session s'arrête immédiatement : il
+  //     n'y a plus de participant volontairement présent. C'est la même règle
+  //     que pour une fermeture de socket (onClose), appliquée au départ
+  //     volontaire, qui gardait jusqu'ici la session 60 s pour un absent.
+  // Une coupure réseau, elle, garde son délai de grâce (onClose, inchangé).
   function onLeave(ws) {
     if (!ws.hub) return fail(ws, 'NOT_IN_SESSION');
     const session = sessions.get(ws.hub.code);
     const playerId = ws.hub.playerId;
     ws.hub = null;
-    if (session) dropPlayer(session, playerId);
+    if (!session) return;
+    if (session.sockets.get(playerId) === ws) session.sockets.delete(playerId);
+    const key = session.code + '/' + playerId;
+    if (graceTimers.has(key)) { clearTimeout(graceTimers.get(key)); graceTimers.delete(key); }
+    S.removePlayer(session, playerId);
+    if (!S.connectedPlayers(session).length) return closeSession(session);
+    S.electHost(session);
+    broadcastSession(session);
   }
 
   // Une fermeture de socket n'est PAS un départ : on marque absent, on réélit
@@ -172,22 +234,29 @@ function createHub(options = {}) {
 
   function connection(ws) {
     ws.hub = null;
+    ws.isAlive = true;
+    connections.add(ws);
+    ws.on('pong', () => { ws.isAlive = true; });
     ws.on('message', (raw) => {
+      ws.isAlive = true;       // un message prouve aussi que la connexion vit
       try { onMessage(ws, raw.toString()); }
       catch (e) {
         // Un handler qui jette ne doit jamais emporter le serveur avec lui.
         fail(ws, 'BAD_JSON');
       }
     });
-    ws.on('close', () => onClose(ws));
+    ws.on('close', () => { connections.delete(ws); onClose(ws); });
     ws.on('error', () => { /* le close suivra */ });
   }
 
   return {
-    sessions, connection, broadcastSession,
+    sessions, connection, broadcastSession, beat,
+    // Arrête le heartbeat (tests, arrêt propre du serveur).
+    stop: () => { if (heartbeat) clearInterval(heartbeat); heartbeat = null; },
+    heartbeatMs,
     stats: () => ({ sessions: sessions.size,
       players: [...sessions.values()].reduce((n, s) => n + s.players.length, 0) }),
   };
 }
 
-module.exports = { createHub };
+module.exports = { createHub, HEARTBEAT_MS };
