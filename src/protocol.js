@@ -25,6 +25,16 @@ const ERRORS = {
   SESSION_CLOSED: 'cette session est terminée',
   ALREADY_IN_SESSION: 'tu es déjà dans une session',
   NOT_IN_SESSION: 'tu n\'es dans aucune session',
+  // Randomizer.
+  NOT_HOST: 'seul l\'hôte peut faire ça',
+  DRAW_IN_PROGRESS: 'un tirage est déjà en cours',
+  NOT_DRAWN: 'aucun tirage à confirmer',
+  NO_ELIGIBLE_GAME: 'aucun jeu possible pour ce groupe',
+  DRAW_FAILED: 'le tirage a échoué',
+  MANIFEST_UNAVAILABLE: 'catalogue des jeux indisponible',
+  BAD_PREFS: 'préférences invalides',
+  BAD_CAPS: 'capacités invalides',
+  BAD_CONSTRAINTS: 'contrainte invalide',
 };
 
 // 32 Ko : un `create` porte au pire un avatar image (24 Ko de data-URL, plafond
@@ -32,7 +42,9 @@ const ERRORS = {
 // ferme le socket plutôt que de garder l'octet en mémoire.
 const MAX_MESSAGE = 32 * 1024;
 
-const ACTIONS = ['create', 'join', 'leave'];
+// `draw` ne porte RIEN : le client demande « tire le prochain jeu », jamais
+// « choisis Passeur ». Un champ `gameId` ou `players` envoyé avec est ignoré.
+const ACTIONS = ['create', 'join', 'leave', 'prefs', 'caps', 'constraints', 'draw', 'continue'];
 
 function parse(raw) {
   if (typeof raw !== 'string') raw = String(raw);

@@ -10,10 +10,20 @@
 // fichier, c'est que la frontière a bougé au mauvais endroit.
 'use strict';
 
-// Les six états prévus. Cette phase n'en fait vivre que deux — `lobby` et
-// `closed` — mais le modèle sait les représenter tous, pour que la phase
-// suivante n'ait pas à réécrire la machine.
+// Les six états prévus. Le randomizer en fait vivre quatre :
+//   lobby    le salon ;
+//   drawing  un tirage est demandé puis révélé (draw.status pending → drawn) ;
+//   debrief  le jeu tiré est confirmé : on est de retour au Hub, prêt pour la
+//            suite (le lancement viendra avec le handoff) ou le tirage suivant ;
+//   closed   fin.
+// `launching` et `inGame` restent représentables pour le handoff, mais aucune
+// transition ne les atteint encore.
 const STATES = ['lobby', 'drawing', 'launching', 'inGame', 'debrief', 'closed'];
+
+// On entre dans une session tant qu'elle vit au Hub : au salon, pendant un
+// tirage, ou entre deux tirages. Le tirage en cours n'en est pas modifié — il
+// a été calculé sur le groupe du moment.
+const OPEN_STATES = ['lobby', 'drawing', 'debrief'];
 
 // 12 et pas 8 : c'est le MAX_PLAYERS de precision-server, le plus permissif des
 // sept (relevé dans src/server.js). Plafonner le Hub à 8 interdirait une
@@ -38,10 +48,16 @@ function createSession(code, options = {}) {
     // Les sockets vivent À CÔTÉ des joueurs, pas dedans : `players` reste une
     // donnée pure, et le sérialiseur ne peut pas en laisser fuir un par erreur.
     sockets: new Map(),
-    // Emplacements structurels, volontairement vides à cette phase. Ils
-    // existent pour que le protocole n'ait pas à changer de forme plus tard.
+    // Le tirage courant (ou le dernier confirmé), voir hub.js → onDraw.
     draw: null,
+    // Compteur de tirages de la session : numérote les draws.
+    drawCount: 0,
+    // `played` grandit à chaque tirage et n'est JAMAIS remis à zéro dans une
+    // session : c'est lui qui nourrit la récence. Une nouvelle session repart
+    // d'un historique vide. `usedContent` reste vide (phases tardives).
     history: { played: [], usedContent: {} },
+    // Réglée par l'hôte : plafond de durée comparé au minutes.max du manifest.
+    constraints: { maxMinutes: null },
     maxPlayers: options.maxPlayers || MAX_PLAYERS,
     graceMs: options.graceMs == null ? GRACE_MS : options.graceMs,
   };
@@ -51,16 +67,16 @@ const getPlayer = (s, id) => s.players.find((p) => p.id === id) || null;
 const connectedPlayers = (s) => s.players.filter((p) => p.connected);
 
 function addPlayer(s, player) {
-  if (s.state !== 'lobby') return { error: 'SESSION_CLOSED' };
+  if (!OPEN_STATES.includes(s.state)) return { error: 'SESSION_CLOSED' };
   if (getPlayer(s, player.id)) return { error: 'PLAYER_EXISTS' };
   if (s.players.length >= s.maxPlayers) return { error: 'SESSION_FULL' };
   const p = {
     id: player.id,
     name: player.name,
     avatar: player.avatar,
-    // Préparés pour le randomizer, PAS encore utilisés : aucune logique métier
-    // ne les lit à cette phase. Leur forme est fixée ici pour que la phase
-    // suivante n'ait pas à migrer des sessions vivantes.
+    // Lus par le moteur de tirage (engine.js). `caps` est DÉCLARATIF et
+    // commence à false : on ne suppose jamais une capacité. `veto` et `love`
+    // ne sont modifiables que par le joueur lui-même (action `prefs`).
     caps: { mic: false },
     veto: [],
     love: [],
@@ -98,6 +114,6 @@ function electHost(s) {
 }
 
 module.exports = {
-  STATES, MAX_PLAYERS, GRACE_MS,
+  STATES, OPEN_STATES, MAX_PLAYERS, GRACE_MS,
   createSession, addPlayer, removePlayer, getPlayer, connectedPlayers, electHost,
 };

@@ -14,6 +14,22 @@
 process.env.PORT = process.env.PORT || '8792';
 process.env.HUB_QUIET = '1';
 
+// Le catalogue : un fichier local (pas le réseau), au format du vrai manifest.
+// Les /health des jeux pointent sur le Hub lui-même — sauf Précision, qui vise
+// un port fermé : un serveur de jeu MORT, pour vérifier qu'il n'est jamais tiré.
+const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+const ICI = `http://127.0.0.1:${process.env.PORT}/health`;
+const jeu = (id, min, max, mmax, needs = [], health = ICI) => ({ id, title: id, emoji: '🎮', url: `games/${id}/`, mode: 'online',
+  players: { min, max }, minutes: { min: 1, max: mmax }, needs, categories: ['reflexe'],
+  server: `wss://${id}.onrender.com`, health, join: 'v1', content: false, replay: false });
+const MANIFEST = path.join(os.tmpdir(), `hub-e2e-manifest-${process.pid}.json`);
+fs.writeFileSync(MANIFEST, JSON.stringify({ version: 1, games: [
+  jeu('morpion', 2, 2, 5), jeu('imitation', 2, 8, 15, ['mic']), jeu('demicercle', 2, 10, 15),
+  jeu('precision', 1, 12, 10, [], 'http://127.0.0.1:9/'), jeu('passeur', 1, 8, 8), jeu('quiment', 3, 8, 15),
+] }));
+process.env.MANIFEST_FILE = MANIFEST;
+process.on('exit', () => { try { fs.unlinkSync(MANIFEST); } catch (_) {} });
+
 const WebSocket = require('ws');
 const { hub } = require('./src/server.js');
 
@@ -92,6 +108,26 @@ async function main() {
     vuParA.session.hostId === 'p_mathys' && vuParB.session.hostId === 'p_mathys');
   t('les deux voient le même code',
     vuParA.session.code === CODE && vuParB.session.code === CODE);
+
+  // ── le tirage, à travers l'assemblage réel (catalogue + santé + hub)
+  const pret = await A.until((s) => s.pool && s.pool.catalog === 'ready' && s.pool.health.precision === 'down'
+    && s.pool.health.passeur === 'up', ['session'], 8000);
+  t('le vrai serveur lit le catalogue et vérifie la santé des jeux', !!pret);
+  t('un serveur de jeu mort est dit « down » et exclu, sans casser le reste',
+    pret.session.pool.why.precision[0].code === 'SERVER_DOWN' && pret.session.pool.eligible.length === 3,
+    pret.session.pool.eligible.join(','));
+  B.send({ action: 'prefs', love: ['passeur'], veto: ['morpion'] });
+  await A.until((s) => !!s.players.find((p) => p.id === 'p_lea' && p.veto.includes('morpion')));
+  A.send({ action: 'draw' });
+  const tire = await B.until((s) => s.draw && s.draw.status === 'drawn', ['session'], 8000);
+  const g = tire.session.draw.gameId;
+  t('A tire : B reçoit le jeu tiré par le serveur', ['demicercle', 'passeur'].includes(g), g);
+  t('ni le jeu en veto, ni le serveur mort, ni le jeu à 3 joueurs',
+    JSON.stringify(tire.session.draw.eligible) === '["demicercle","passeur"]');
+  t('history.played = [jeu tiré]', JSON.stringify(tire.session.history.played) === JSON.stringify([g]));
+  A.send({ action: 'continue' });
+  const fini = await B.until((s) => s.state === 'debrief');
+  t('continuer : la session revient au Hub (debrief), le jeu reste tiré', fini.session.draw.gameId === g);
 
   {
     const h = await health();

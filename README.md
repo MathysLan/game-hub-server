@@ -1,11 +1,12 @@
 # game-hub-server
 
 Orchestrateur de session du portfolio [mathyslan.github.io](https://mathyslan.github.io).
-Un salon : un groupe d'amis, leurs identités, leur hôte. **Rien d'autre.**
+Un salon (un groupe d'amis, leurs identités, leur hôte) et **le tirage du jeu**
+pour ce groupe. Rien d'autre.
 
 ```
-PROFIL / JOUEURS  →  SESSION  →  (plus tard) SÉLECTION  →  HANDOFF  →  SERVEUR DE JEU
-                     ▲ ce dépôt                                        ▲ les 7 existants
+PROFIL / JOUEURS  →  SESSION  →  SÉLECTION (tirage)  →  (plus tard) HANDOFF  →  SERVEUR DE JEU
+                     ▲────── ce dépôt ──────▲                                    ▲ les 7 existants
 ```
 
 ## Ce que le Hub ne fait pas — et ne doit jamais faire
@@ -18,14 +19,13 @@ au mauvais endroit.
 
 ## Ce qui n'est pas encore là
 
-Cette version est un **squelette de session**. Volontairement absents :
+Volontairement absents :
 
 | | |
 |---|---|
-| randomizer, caisse Mann Co. | phase suivante |
 | handoff vers un jeu, jeton de lancement | phase suivante |
-| préchauffage des serveurs Render | phase suivante |
-| historique de contenu, rejouer | phases tardives |
+| score cumulé de soirée, retour du jeu au Hub | avec le handoff |
+| historique de CONTENU (`usedContent`), rejouer | phases tardives |
 | compte, authentification, base de données | jamais |
 | matchmaking public | jamais — c'est un Hub entre amis |
 
@@ -38,6 +38,10 @@ npm install
 npm start            # écoute sur $PORT, 8100 par défaut
 npm test             # modèle, puis protocole, puis bout en bout
 ```
+
+Variables d'environnement : `PORT` (8100), `MANIFEST_URL` (défaut : le
+manifest publié par GitHub Pages, `https://mathyslan.github.io/data/games.manifest.json`),
+`MANIFEST_FILE` (un fichier local à la place — tests, développement hors ligne).
 
 ## Modèle
 
@@ -52,8 +56,10 @@ npm test             # modèle, puis protocole, puis bout en bout
   createdAt,
   players: [ … ],
   sockets: Map,          // à CÔTÉ des joueurs, jamais dedans
-  draw: null,            // emplacement, vide à cette phase
-  history: { played: [], usedContent: {} },   // idem
+  draw: null,            // le tirage courant, ou le dernier confirmé (voir « Randomizer »)
+  drawCount: 0,          // numérote les tirages
+  history: { played: [], usedContent: {} },   // played grandit à chaque tirage, jamais remis à zéro
+  constraints: { maxMinutes: null },           // réglé par l'hôte
   maxPlayers, graceMs
 }
 ```
@@ -65,8 +71,8 @@ npm test             # modèle, puis protocole, puis bout en bout
   id,                    // fourni par le client, valeur OPAQUE
   name,                  // ≤ 16 caractères
   avatar: { kind: 'emoji' | 'image', emoji, src? },
-  caps:  { mic: false },  // préparés pour le randomizer, PAS encore lus
-  veto:  [],
+  caps:  { mic: false },  // DÉCLARATIF, faux par défaut ; clés : mic, cam, consent
+  veto:  [],             // ids de jeux — modifiable par le joueur LUI-MÊME seulement
   love:  [],
   connected,             // un socket vivant est-il attaché ?
   since                  // interne, ne sort pas
@@ -81,10 +87,18 @@ reconnexion.
 
 `lobby` → `drawing` → `launching` → `inGame` → `debrief` → `closed`
 
-**Cette phase ne fait vivre que `lobby` et `closed`.** Les quatre autres sont
-représentables par le modèle pour que la phase suivante n'ait pas à réécrire la
-machine à états, mais **aucune transition ne les atteint aujourd'hui** : ils
-n'existent que dans `STATES`.
+Le randomizer en fait vivre quatre :
+
+| État | Quand |
+|---|---|
+| `lobby` | le salon, avant le premier tirage |
+| `drawing` | un tirage est demandé (`draw.status: 'pending'`), puis révélé (`'drawn'`) |
+| `debrief` | l'hôte a confirmé (`'confirmed'`) : retour au Hub, prêt pour la suite — ou le tirage suivant |
+| `closed` | fin |
+
+`launching` et `inGame` restent réservés au handoff : **aucune transition ne
+les atteint aujourd'hui**. On entre dans une session en `lobby`, `drawing` ou
+`debrief`.
 
 ## Protocole WebSocket
 
@@ -98,6 +112,11 @@ renvoie `{ type }`, en JSON sur un seul socket.
 | `create` | `player` | crée une session, l'appelant devient hôte |
 | `join` | `code`, `player` | rejoint, ou **reprend sa place** si l'id est déjà connu |
 | `leave` | — | quitte tout de suite, sans délai de grâce |
+| `prefs` | `love[]`, `veto[]` | ses PROPRES ❤️ / 🚫 (ids de jeux) |
+| `caps` | `caps` (`{ mic: true }`) | ses PROPRES capacités, déclaratives |
+| `constraints` | `maxMinutes` (ou `null`) | **hôte** — durée maximale d'un jeu |
+| `draw` | — | **hôte** — « tire le prochain jeu ». Aucun autre champ n'est lu |
+| `continue` | — | **hôte** — prend acte du jeu tiré |
 
 ### Serveur → client
 
@@ -109,7 +128,10 @@ renvoie `{ type }`, en JSON sur un seul socket.
 | `error` | `code`, `message` |
 
 `session` est l'**état public** : `{ code, state, hostId, maxPlayers, players[],
-draw, history }`. Ni socket, ni identifiant interne, ni horodatage.
+constraints, draw, history, pool }`. Ni socket, ni identifiant interne.
+`pool` = ce que le moteur dit du catalogue pour CE groupe, recalculé à chaque
+diffusion : `{ catalog, games[], eligible[], why{}, weights{}, health{} }`.
+Un `error` `NO_ELIGIBLE_GAME` porte en plus `why`.
 
 ### Erreurs
 
@@ -130,6 +152,13 @@ proposer la bonne suite. Le `message` humain reste au même endroit.
 | `ALREADY_IN_SESSION` | ce socket est déjà dans une session |
 | `NOT_IN_SESSION` | `leave` sans session |
 | `REPLACED` | ce socket vient d'être remplacé par une autre connexion du même joueur |
+| `NOT_HOST` | `draw`, `continue` ou `constraints` par un non-hôte |
+| `DRAW_IN_PROGRESS` | un tirage est déjà en cours (`drawing`) |
+| `NOT_DRAWN` | `continue` sans tirage révélé |
+| `NO_ELIGIBLE_GAME` | aucun jeu possible pour ce groupe — `why` dit pourquoi, jeu par jeu |
+| `MANIFEST_UNAVAILABLE` | catalogue illisible et aucun ancien en mémoire |
+| `DRAW_FAILED` | erreur interne pendant un tirage (la session revient à son état) |
+| `BAD_PREFS` / `BAD_CAPS` / `BAD_CONSTRAINTS` | réglage mal formé |
 
 ## Décisions, et pourquoi
 
@@ -202,6 +231,71 @@ donc le Hub garde l'avatar complet en mémoire. Le jour du handoff, c'est
 unités) serait coupé en plein milieu par les jeux : `src/identity.js` le refuse
 ici, comme le client le refuse déjà.
 
+## Randomizer
+
+### Le catalogue : le manifest du portfolio, relu, pas recopié
+
+`src/catalog.js` va chercher `data/games.manifest.json` sur GitHub Pages
+(`MANIFEST_URL`, cache 5 min), exactement comme `ban-server` va chercher
+`videos.json`. Mathys édite `data/games.js`, rebuild, push : **aucun
+redéploiement Render**. `MANIFEST_FILE` le remplace par un fichier (tests).
+Chaque jeu est relu ; un jeu mal formé est écarté, une version de schéma
+inconnue refusée en bloc. Si GitHub Pages ne répond pas, l'ancien catalogue
+sert encore.
+
+### Filtrer → pondérer → tirer (`src/engine.js`, module pur)
+
+**1. Filtre** — un jeu sort si l'une de ces raisons s'applique (toutes sont
+renvoyées, pas seulement la première, dans `pool.why`) :
+
+| Raison | Règle (valeurs du manifest, telles quelles) |
+|---|---|
+| `TOO_FEW` / `TOO_MANY` | `session.players.length` hors de `players.min..max` (absents compris : ils sont dans le groupe) |
+| `LOCAL_ONLY` | `mode: 'local'` et plus d'un joueur (un jeu local tourne dans UN navigateur) |
+| `NEEDS` | un `needs` que **un seul** joueur n'a pas déclaré — nommé |
+| `VETO` | **un** joueur l'a mis en veto — nommé. Personne d'autre ne peut le lever |
+| `TOO_LONG` | `minutes.max` > la durée max réglée par l'hôte (c'est le MAX qui compte) |
+| `SERVER_DOWN` | le `/health` du jeu n'a pas répondu 2xx |
+
+**2. Poids** — `(1 + 0,5 × nombre de ❤️) × récence`. Récence selon le dernier
+passage du jeu : tirage précédent ×0,15, avant-dernier ×0,4, celui d'avant ×0,7,
+sinon ×1. **Un cœur penche, il n'oblige pas ; la récence freine, elle n'interdit
+pas** (à deux jeux possibles, un groupe alternerait sinon mécaniquement).
+
+**3. Tirage** — pondéré, hasard cryptographique. Rien n'est tiré avant que la
+liste éligible soit connue.
+
+### Le tirage, côté Hub
+
+- `draw` ne porte rien : ni jeu, ni nombre de joueurs. Tout est relu dans
+  l'état serveur.
+- L'état passe à `drawing` **synchronement**, avant tout `await` : un second
+  `draw`, même dans la même milliseconde, reçoit `DRAW_IN_PROGRESS`. Deux
+  tirages vivants, ou deux jeux pour un tirage, sont impossibles.
+- Le Hub vérifie la santé des jeux pas encore vus vivants (GET en parallèle,
+  40 s au plus : un serveur Render endormi a le temps de se réveiller), puis
+  filtre sur l'état de **ce moment-là** — un veto posé pendant l'attente compte.
+- Résultat : `draw = { id, n, status: 'drawn', by, gameId, eligible[], weights{},
+  requestedAt, drawnAt }`, et `history.played.push(gameId)`. L'historique ne
+  fait que grandir pendant la session ; une nouvelle session repart de zéro.
+- Aucun jeu possible : `NO_ELIGIBLE_GAME` + `why`, **aucun repli**, la session
+  revient exactement à son état d'avant.
+- `continue` (hôte) : `draw.status = 'confirmed'`, état `debrief`. Le jeu ne se
+  lance pas : c'est le point d'accroche du handoff.
+- Revenir (reconnexion) ne déclenche rien : on retrouve le tirage en cours.
+- **Enchaîner** : `debrief` → `draw` → `drawing` → `continue` → `debrief`…
+  Le moteur est sans état : une « soirée en N jeux » ne serait qu'un compteur
+  autour de ce cycle.
+
+### Santé des serveurs de jeu (`src/health.js`)
+
+Un **GET** sur l'URL `health` du manifest, rien d'autre : le Hub n'ouvre
+**jamais** de WebSocket vers un serveur de jeu. `up` (2xx) vaut 5 min, `down`
+(autre code, ou rien en 40 s) écarte le jeu 2 min. Pré-réveil à la création
+d'une session ; revérification avant chaque tirage si ce n'est plus frais. Un
+jeu en cours de vérification n'est pas écarté du salon (il se réveille), mais
+seul un jeu vu vivant peut être **tiré**.
+
 ## HTTP
 
 ```
@@ -222,6 +316,10 @@ plus parler à un serveur ancien — pas à chaque correctif.
 | `src/session.js` | modèle de session, joueurs, élection d'hôte | non |
 | `src/serialize.js` | l'état public (liste **blanche**) | non |
 | `src/protocol.js` | messages acceptés, codes d'erreur | non |
+| `src/engine.js` | **le moteur de tirage** : filtre, poids, tirage — pur | non |
+| `src/prefs.js` | validation de prefs, caps, contrainte | non |
+| `src/catalog.js` | lecture et validation du manifest | HTTP (GET) |
+| `src/health.js` | santé des serveurs de jeu | HTTP (GET) |
 | `src/hub.js` | le magasin de sessions et les handlers | oui |
 | `src/http.js` | `/health` | oui |
 | `src/server.js` | assemblage et démarrage | oui |
@@ -235,10 +333,18 @@ ajoutant un champ au modèle.
 
 ```bash
 node test-session.js   # 41 — modèle pur, sans réseau
+node test-engine.js    # 65 — moteur de tirage pur, sur les valeurs du manifest réel
 node test.js           # 37 — protocole, vraies connexions WebSocket
 node test-presence.js  # 23 — heartbeat, leave, coupures, reprises (vraies connexions)
-node test-e2e.js       # 20 — le vrai serveur, HTTP compris
+node test-draw.js      # 54 — randomizer sur vraies connexions : prefs, caps, tirage,
+                       #      concurrence, reconnexion, serveur malade, sécurité
+node test-e2e.js       # 26 — le vrai serveur, HTTP et tirage compris
 ```
+
+`test-draw.js` et `test-e2e.js` n'utilisent PAS le réseau : le catalogue est
+un fichier local aux valeurs du manifest réel, et les `/health` des jeux
+pointent vers un faux serveur HTTP local (ou le Hub lui-même) — qu'on rend
+malade, lent ou mort à volonté.
 
 `test-presence.js` simule une connexion MORTE avec un client `ws` créé en
 `autoPong: false` : il ne répond plus aux pings, comme un téléphone hors ligne.

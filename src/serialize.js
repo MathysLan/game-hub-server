@@ -28,18 +28,38 @@ function publicPlayer(p, hostId) {
   };
 }
 
-function publicSession(s) {
+// Le tirage, champ par champ lui aussi. `gameId` reste null tant que le serveur
+// n'a pas tiré : le client n'a rien à animer avant d'avoir le vrai résultat.
+function publicDraw(d) {
+  if (!d) return null;
+  return {
+    id: d.id,
+    n: d.n,
+    status: d.status,              // 'pending' | 'drawn' | 'confirmed'
+    by: d.by,
+    gameId: d.gameId || null,
+    eligible: (d.eligible || []).slice(),
+    weights: Object.assign({}, d.weights || {}),
+    requestedAt: d.requestedAt,
+    drawnAt: d.drawnAt || null,
+  };
+}
+
+// `pool` : ce que le moteur dit du catalogue POUR CE GROUPE, recalculé à
+// chaque diffusion (voir hub.js). Il voyage en permanence, pour que chacun
+// voie pourquoi un jeu est exclu sans avoir à tirer.
+function publicSession(s, pool) {
   return {
     code: s.code,
     state: s.state,
     hostId: s.hostId,
     maxPlayers: s.maxPlayers,
     players: s.players.map((p) => publicPlayer(p, s.hostId)),
-    // Emplacements structurels : vides à cette phase, mais présents pour que le
-    // client n'ait pas à gérer deux formes de message quand ils se rempliront.
-    draw: s.draw,
-    history: s.history,
+    constraints: { maxMinutes: s.constraints ? s.constraints.maxMinutes : null },
+    draw: publicDraw(s.draw),
+    history: { played: s.history.played.slice(), usedContent: s.history.usedContent },
+    pool: pool || null,
   };
 }
 
-module.exports = { publicPlayer, publicSession };
+module.exports = { publicPlayer, publicDraw, publicSession };
