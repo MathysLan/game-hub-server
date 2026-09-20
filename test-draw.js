@@ -203,12 +203,13 @@ async function main() {
   t('tirage : les poids du moment sont joints (Passeur aimé : 1,5)', d1a.draw.weights.passeur === 1.5);
   t('tirage : drawnAt et numéro', d1a.draw.n === 1 && typeof d1a.draw.drawnAt === 'number');
   t('historique : [g1]', JSON.stringify(d1a.history.played) === JSON.stringify([g1]));
-  // ⚠️ Le cœur de la stratégie : UN candidat tiré, UN seul serveur réveillé.
-  t('tirage : un seul serveur réveillé, celui du jeu tiré',
-    appels.length - avantD1 === 1 && appels[avantD1].id === g1, appels.slice(avantD1).map((x) => x.id).join(',') || 'aucun');
-  t('santé : uniquement des GET HTTP, jamais un WebSocket vers un jeu',
-    appels.length > 0 && appels.every((x) => x.method === 'GET' && !x.upgrade));
-  t('tirage : le candidat n\'est pas révélé pendant le réveil', pend.draw.gameId === null && pend.draw.waking === true);
+  // ⚠️⚠️ LE CŒUR DE LA CORRECTION : le tirage ne consulte AUCUN /health.
+  // Un serveur endormi (Render, plan gratuit) ne doit pas pouvoir transformer
+  // un tirage valable en refus ; il se réveillera quand la page du jeu s'y
+  // connectera, après « continuer ».
+  t('tirage : aucun serveur de jeu interrogé', appels.length - avantD1 === 0,
+    appels.slice(avantD1).map((x) => x.id).join(',') || 'aucun appel');
+  t('tirage : le jeu n\'est pas révélé dans la trame d\'attente', pend.draw.gameId === null);
 
   // Un second draw avant « continuer » : refusé, rien ne bouge.
   m = a.mark();
@@ -256,11 +257,9 @@ async function main() {
   a.send({ action: 'continue' });
   await a.until((x) => x.state === 'debrief' && x.draw.n === 3, 3000, m);
 
-  // ── reconnexion PENDANT un tirage en attente
-  // ⚠️ On ne sait pas QUEL jeu sera tiré : c'est donc TOUS les /health qu'il
-  // faut ralentir pour garder le tirage en `pending` le temps du test.
-  defautSante = { code: 200, delay: 400 };
-  await sleep(300);                                    // la santé « up » est périmée (TTL 250 ms)
+  // ── reconnexion pendant un tirage
+  // La trame `pending` est toujours émise (avant de lire le catalogue), mais le
+  // résultat suit aussitôt : on ne cherche plus à tenir la fenêtre ouverte.
   m = a.mark();
   a.send({ action: 'draw' });
   const pend4 = await a.until((x) => x.draw && x.draw.n === 4 && x.draw.status === 'pending', 3000, m);
@@ -272,7 +271,6 @@ async function main() {
   const d4b = await b2.until((x) => x.draw && x.draw.n === 4 && x.draw.status === 'drawn', 4000);
   t('reconnexion pendant pending : un seul résultat, le même chez A et B', d4.draw.gameId === d4b.draw.gameId && d4.draw.id === pend4.draw.id);
   t('reconnexion pendant pending : aucun tirage de plus', d4.history.played.length === 4);
-  defautSante = { code: 200, delay: 0 };
 
   // ── reconnexion APRÈS la révélation
   b2.ws.terminate();
@@ -286,52 +284,32 @@ async function main() {
   a.send({ action: 'continue' });
   await a.until((x) => x.state === 'debrief' && x.draw.n === 4, 3000, m);
 
-  // ── un serveur de jeu tombe
-  // ⚠️ Ce n'est PLUS le filtre qui l'écarte : le jeu reste proposé (les règles
-  // ignorent la santé), mais un candidat dont le serveur ne répond pas est
-  // recalé APRÈS le tirage, et on retire parmi les autres.
-  // On ne laisse que deux jeux possibles — Passeur (muet) et Demi-Cercle — pour
-  // que le résultat soit déterministe quel que soit le hasard.
+  // ── TOUS les serveurs de jeu sont morts : le tirage marche quand même
+  // C'est le cas qui a justifié toute la correction. On ne laisse qu'un seul
+  // jeu possible, Passeur, et son /health répond 503 : il doit être tiré et
+  // révélé, tout de suite, sans un seul appel de santé.
   m = a.mark();
-  a.send({ action: 'prefs', love: [], veto: ['morpion', 'precision', 'imitation', 'ban', 'quiment'] });
-  await a.until((x) => joueur(x, 'p_aaaa').veto.length === 5, 3000, m);
-  sante.passeur = { code: 503, delay: 0 };
-  await sleep(300);
+  a.send({ action: 'prefs', love: [], veto: ['morpion', 'precision', 'imitation', 'ban', 'quiment', 'demicercle'] });
+  await a.until((x) => joueur(x, 'p_aaaa').veto.length === 6, 3000, m);
+  for (const id of ['passeur', 'demicercle', 'precision', 'imitation', 'ban', 'morpion', 'quiment']) sante[id] = { code: 503, delay: 0 };
   m = a.mark();
   const avantD5 = appels.length;
+  const t5 = Date.now();
   a.send({ action: 'draw' });
   const d5 = await a.until((x) => x.draw && x.draw.n === 5 && x.draw.status === 'drawn', 6000, m);
-  t('serveur down (503) : le jeu reste PROPOSÉ dans le salon — les règles ignorent la santé',
-    d5.pool.eligible.includes('passeur'), d5.pool.eligible.join(','));
-  t('serveur down (503) : mais il n\'est jamais le résultat', d5.draw.gameId === 'demicercle', d5.draw.gameId);
-  t('serveur down : rien ne l\'écarte dans le salon', !(d5.pool.why.passeur || []).some((r) => r.code === 'SERVER_DOWN'));
-  t('serveur down : le candidat recalé n\'entre pas dans l\'historique',
-    d5.history.played.length === 5 && d5.history.played[4] === 'demicercle', d5.history.played.join(' → '));
-  t('serveur down : deux serveurs réveillés au plus pour ce tirage', appels.length - avantD5 <= 2,
-    appels.slice(avantD5).map((x) => x.id).join(','));
+  const ms5 = Date.now() - t5;
+  t('serveur mort (503) : le jeu reste proposé dans le salon', d5.pool.eligible.includes('passeur'), d5.pool.eligible.join(','));
+  t('serveur mort (503) : il est bel et bien TIRÉ et révélé', d5.draw.gameId === 'passeur', d5.draw.gameId);
+  t('serveur mort : rien ne l\'écarte dans le salon', !(d5.pool.why.passeur || []).some((r) => r.code === 'SERVER_DOWN'));
+  t('serveur mort : aucun /health n\'a été appelé pour ce tirage', appels.length - avantD5 === 0,
+    appels.slice(avantD5).map((x) => x.id).join(',') || 'aucun appel');
+  t('serveur mort : la révélation est immédiate', ms5 < 1000, `${ms5} ms`);
+  t('serveur mort : l\'historique retient le jeu tiré', d5.history.played.length === 5 && d5.history.played[4] === 'passeur',
+    d5.history.played.join(' → '));
   m = a.mark();
   a.send({ action: 'continue' });
   await a.until((x) => x.state === 'debrief' && x.draw.n === 5, 3000, m);
-
-  // Les deux seuls jeux possibles ont un serveur muet : erreur explicite, et
-  // surtout PAS le même code que « aucun jeu possible » — ce n'est pas le
-  // groupe qui est en cause, c'est Render.
-  sante.demicercle = { code: 503, delay: 0 };
-  await sleep(300);
-  m = a.mark();
-  const avantKo = appels.length;
-  a.send({ action: 'draw' });
-  const eKo = await a.error('NO_SERVER_AVAILABLE', 8000, m);
-  t('tous les candidats recalés : NO_SERVER_AVAILABLE (pas NO_ELIGIBLE_GAME)', !!eKo);
-  t('tous recalés : l\'erreur dit quels jeux ont été essayés',
-    !!eKo && (eKo.tried || []).length === 2 && eKo.tried.includes('passeur') && eKo.tried.includes('demicercle'),
-    JSON.stringify(eKo && eKo.tried));
-  t('tous recalés : chaque jeu essayé une fois, pas plus', appels.length - avantKo >= 2, `${appels.length - avantKo} requêtes`);
-  s = await a.until((x) => x.state === 'debrief', 3000, m);
-  t('tous recalés : pas de repli — le tirage précédent est intact',
-    s.draw.n === 5 && s.draw.status === 'confirmed' && s.history.played.length === 5);
-  sante.passeur = { code: 200, delay: 0 };
-  sante.demicercle = { code: 200, delay: 0 };
+  for (const id of ['passeur', 'demicercle', 'precision', 'imitation', 'ban', 'morpion', 'quiment']) sante[id] = { code: 200, delay: 0 };
   m = a.mark();
   a.send({ action: 'prefs', love: [], veto: [] });
   await a.until((x) => joueur(x, 'p_aaaa').veto.length === 0, 3000, m);
@@ -345,7 +323,7 @@ async function main() {
   a.send({ action: 'draw' });
   const e0 = await a.error('NO_ELIGIBLE_GAME', 4000, m);
   t('aucun jeu : erreur explicite NO_ELIGIBLE_GAME, avec le pourquoi', !!e0 && Object.keys(e0.why || {}).length === 8);
-  t('aucun jeu : aucun serveur n\'a été réveillé pour rien', !(e0.tried || []).length);
+  t('aucun jeu : c\'est la SEULE raison de refuser un tirage', e0.code === 'NO_ELIGIBLE_GAME');
   s = await a.until((x) => x.state === 'debrief', 3000, m);
   t('aucun jeu : pas de repli — la session revient à son état, tirage précédent intact',
     s.draw.n === 5 && s.draw.status === 'confirmed' && s.history.played.length === 5);
@@ -384,6 +362,10 @@ async function main() {
     const t2 = Date.now();
     const r3 = await H2.check({ id: 'ferme', mode: 'online', health: 'http://127.0.0.1:45999/' });
     t('connexion refusée (personne n\'écoute) : « down » tout de suite, sans réessai', r3 === 'down' && Date.now() - t2 < 1000, `${Date.now() - t2} ms`);
+    // La santé reste utilisable pour le diagnostic — ce qu'elle ne fait plus,
+    // c'est décider d'un tirage.
+    t('santé : uniquement des GET HTTP, jamais un WebSocket vers un jeu',
+      appels.length > 0 && appels.every((x) => x.method === 'GET' && !x.upgrade));
   }
 
   // ── Hub sans catalogue : le salon vit, le tirage refuse proprement

@@ -249,19 +249,27 @@ async function main() {
   a2.send({ action: 'abort', drawId: r.draw.id, reason: 'UNREACHABLE' });
   const inj = await b3.until((x) => x.launch && x.launch.stage === 'failed', 2000, m);
   t('A. serveur injoignable : retour au salon, raison UNREACHABLE', inj.state === 'lobby' && inj.launch.reason === 'UNREACHABLE');
-  // ⚠️ Le jeu reste PROPOSÉ : la santé ne filtre plus le catalogue. Ce que le
-  // Hub retient, c'est que son serveur est down — le candidat sera recalé au
-  // tirage suivant, sans réveiller les six autres au passage.
+  // ⚠️ Le jeu reste PROPOSÉ et reste TIRABLE : la santé n'entre ni dans le
+  // filtre, ni dans le tirage. Le Hub retient seulement, pour information, que
+  // son serveur n'a pas répondu — et un serveur qui dormait se réveillera au
+  // lancement suivant, quand la page du jeu s'y connectera.
   const pool = b3.last();
   t('A. … le jeu reste proposé dans le salon (la santé ne filtre pas)',
     pool.pool.eligible.includes('passeur') && !(pool.pool.why.passeur || []).some((w) => w.code === 'SERVER_DOWN'));
-  t('A. … mais le Hub le retient « down »', pool.pool.health.passeur === 'down', pool.pool.health.passeur);
+  t('A. … le Hub le note « down », mais pour information seulement', pool.pool.health.passeur === 'down', pool.pool.health.passeur);
   m = a2.mark();
   a2.send({ action: 'draw' });
-  t('A. … et le tirage suivant le recale : NO_SERVER_AVAILABLE, pas NO_ELIGIBLE_GAME',
-    !!(await a2.error('NO_SERVER_AVAILABLE', 3000, m)));
+  const reTire = await a2.until((x) => x.draw && x.draw.status === 'drawn', 4000, m);
+  t('A. … et le tirage suivant le retire quand même : un serveur muet ne bloque rien',
+    reTire.draw.gameId === 'passeur', reTire.draw.gameId);
+  m = a2.mark();
+  a2.send({ action: 'continue' });
+  await a2.until((x) => x.state !== 'drawing', 3000, m);
 
   // ── serveur vu down AVANT le lancement : échec immédiat
+  // ⚠️ C'est le LANCEMENT, pas le tirage : là, un serveur qu'un joueur vient de
+  // signaler injoignable est une information fraîche et utile — inutile
+  // d'envoyer tout le groupe dans le vide.
   await sleep(600);                                    // le « down » du cas A est périmé (500 ms)
   const s2 = await trio('2');
   // Le tirage recale déjà un candidat dont le serveur ne répond pas

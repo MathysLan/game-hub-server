@@ -160,24 +160,24 @@ t('7. récence × cœur : les deux se multiplient', E.evaluate(session(3, (s) =>
 
 // ── 8. la santé n'est PLUS dans le moteur
 // Elle ne dit pas si un jeu convient au groupe, seulement si son serveur est
-// réveillé. Le Hub vérifie le serveur du seul candidat tiré, APRÈS le tirage
-// (hub.js → onDraw, testé par test-draw.js).
+// réveillé — et elle n'intervient plus NULLE PART dans le tirage : le serveur
+// d'un jeu se réveille tout seul quand la page du jeu s'y connecte, après
+// « continuer » (test-candidat.js garde cette règle).
 t('8. le moteur ne connaît pas la santé : aucun jeu n\'est écarté pour un serveur',
   !Object.values(E.evaluate(session(3), GAMES).why).flat().some((r) => r.code === 'SERVER_DOWN'));
-t('8. évaluer ne prend que la session et le catalogue (plus aucun état de santé)', E.evaluate.length === 2 && E.draw.length === 3);
-t('8. exclure : un candidat écarté POUR CE TIRAGE sort de la liste et des poids', (() => {
-  const ev = E.evaluate(session(3), GAMES, { exclure: ['passeur'] });
-  return !ev.eligible.includes('passeur') && !('passeur' in ev.weights) && ev.why.passeur[0].code === 'SERVER_DOWN';
+t('8. évaluer ne prend que la session et le catalogue ; tirer, le hasard en plus',
+  E.evaluate.length === 2 && E.draw.length === 3);
+// ⚠️ Plus aucun moyen d'écarter un jeu au tirage pour une raison qui ne vienne
+// pas des RÈGLES : l'option `exclure`, qui servait à recaler un candidat dont
+// le serveur ne répondait pas, a disparu avec la boucle qui l'utilisait.
+t('8. un serveur muet ne peut plus retirer un jeu du tirage (plus d\'échappatoire)', (() => {
+  const ev = E.evaluate(session(3), GAMES, { exclure: ['passeur'] });   // option morte : ignorée
+  return ev.eligible.includes('passeur') && ev.weights.passeur === 1 && !ev.why.passeur;
 })());
-t('8. exclure : le tirage se fait parmi les autres, sans rien changer d\'autre', (() => {
+t('8. … et le tirage garde toutes ses chances de tomber dessus', (() => {
   const r = prng(4);
-  for (let i = 0; i < 500; i++) { const d = E.draw(session(3), GAMES, r, { exclure: ['passeur', 'quiment'] }); if (d.gameId !== 'demicercle' && d.gameId !== 'precision') return false; }
-  return true;
-})());
-t('8. exclure : rien n\'est retenu contre le jeu au tirage SUIVANT (pas d\'historique)', (() => {
-  const s2 = session(3);
-  E.draw(s2, GAMES, prng(2), { exclure: ['passeur'] });
-  return s2.history.played.length === 0 && E.evaluate(s2, GAMES).eligible.includes('passeur') && E.evaluate(s2, GAMES).weights.passeur === 1;
+  for (let i = 0; i < 500; i++) if (E.draw(session(3), GAMES, r, { exclure: ['passeur'] }).gameId === 'passeur') return true;
+  return false;
 })());
 
 // ── 9. aucun jeu disponible

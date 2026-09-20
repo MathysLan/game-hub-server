@@ -38,11 +38,6 @@ function publicDraw(d) {
     id: d.id,
     n: d.n,
     status: d.status,              // 'pending' | 'drawn' | 'confirmed'
-    // Un serveur de jeu est en train d'être réveillé. Le candidat, lui, n'est
-    // PAS envoyé tant qu'il n'est pas confirmé : la caisse ne doit pas être
-    // éventée avant de s'ouvrir.
-    waking: !!d.waking,
-    tried: d.tried || 0,
     by: d.by,
     gameId: d.gameId || null,
     eligible: (d.eligible || []).slice(),

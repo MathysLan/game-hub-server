@@ -387,53 +387,32 @@ function createHub(options = {}) {
     try { games = await catalog.load(); }
     catch (_) { return annuler('MANIFEST_UNAVAILABLE'); }
 
-    // ⚠️ UN CANDIDAT, UN SERVEUR VÉRIFIÉ. On tire d'abord selon les RÈGLES,
-    // puis on ne réveille que le serveur du jeu tiré. S'il ne répond pas, ce
-    // jeu sort de CE tirage (et de lui seul) et on tire à nouveau parmi les
-    // autres. Rien n'entre dans l'historique tant qu'un jeu n'est pas confirmé.
-    const ecartes = [];        // candidats dont le serveur n'a pas répondu
+    // ⚠️⚠️ LE TIRAGE NE DÉPEND QUE DES RÈGLES. Pas de /health, pas d'attente,
+    // pas de second tirage : on tire, on révèle. C'est la correction de fond —
+    // un serveur endormi (Render, plan gratuit) ne doit PAS transformer un
+    // tirage parfaitement valable en « aucun serveur disponible ».
+    //
+    // Le réveil se fait plus tard et tout seul : après « continuer », le
+    // handoff ouvre la page du jeu, et c'est ELLE qui se connecte à son
+    // serveur et le réveille. Personne n'a besoin de le faire à l'avance.
+    //
+    // La santé reste lue (poolOf → `pool.health`) mais seulement pour
+    // INFORMER : elle n'entre ni dans le filtre, ni dans le tirage.
     try {
-      for (;;) {
-        // Toujours sur l'état de MAINTENANT : un veto posé pendant un réveil compte.
-        const res = E.draw(session, games, random, { exclure: ecartes });
-        if (res.error) {
-          return annuler(ecartes.length ? 'NO_SERVER_AVAILABLE' : 'NO_ELIGIBLE_GAME', { why: res.why, tried: ecartes.slice() });
-        }
-        const jeu = games.find((g) => g.id === res.gameId);
-        console.log(`[tirage] #${draw.n} candidat=${res.gameId}`);
-        // Le client sait qu'on réveille un serveur, sans savoir LEQUEL : le
-        // candidat n'est révélé qu'une fois confirmé (sinon la caisse est
-        // éventée avant de s'ouvrir).
-        draw.waking = true;
-        draw.tried = ecartes.length;
-        broadcastSession(session);
+      const res = E.draw(session, games, random);
+      if (res.error) return annuler('NO_ELIGIBLE_GAME', { why: res.why });
 
-        const etat = await health.one(jeu);
-
-        // Pendant l'attente, la session a pu se fermer ou un autre tirage naître.
-        if (sessions.get(session.code) !== session || session.draw !== draw) return;
-
-        if (etat !== 'up') {
-          console.warn(`[tirage] #${draw.n} candidat=${res.gameId} serveur indisponible → on retire`);
-          ecartes.push(res.gameId);
-          continue;
-        }
-
-        draw.status = 'drawn';
-        draw.waking = false;
-        draw.gameId = res.gameId;
-        draw.eligible = res.eligible;
-        draw.weights = res.weights;
-        draw.drawnAt = Date.now();
-        session.drawCount = draw.n;
-        // Confirmé, et SEULEMENT maintenant : l'historique ne retient que les
-        // jeux réellement tirés — un candidat écarté pour cause de serveur
-        // muet ne doit pas être pénalisé par la récence au tirage suivant.
-        session.history.played.push(res.gameId);
-        console.log(`[tirage] #${draw.n} confirmé=${res.gameId}${ecartes.length ? ' (après ' + ecartes.join(', ') + ')' : ''}`);
-        broadcastSession(session);
-        return;
-      }
+      draw.status = 'drawn';
+      draw.gameId = res.gameId;
+      draw.eligible = res.eligible;
+      draw.weights = res.weights;
+      draw.drawnAt = Date.now();
+      session.drawCount = draw.n;
+      // Le tirage est définitif dès cet instant : il entre dans l'historique,
+      // qui ne fait que grandir pendant toute la session.
+      session.history.played.push(res.gameId);
+      console.log(`[tirage] #${draw.n} ${res.gameId}`);
+      broadcastSession(session);
     } catch (e) {
       // Un bug ne doit pas laisser la session bloquée en « tirage en cours ».
       console.error('[tirage]', e && e.message);

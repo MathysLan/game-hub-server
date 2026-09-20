@@ -11,12 +11,13 @@
 //   2. PONDÉRER  — parmi les jeux possibles, un cœur penche, la récence freine.
 //   3. TIRER     — au hasard, selon les poids.
 //
-// ⚠️ LA SANTÉ DES SERVEURS N'EST PAS DANS CE MODULE. Elle ne dit pas si un jeu
-// convient au groupe, seulement si son serveur est réveillé — et sur Render, un
-// serveur endormi met ~20 s à répondre. La vérifier pour les sept jeux avant de
-// tirer réveillait tout le parc et pouvait écarter des jeux parfaitement
-// valables (constaté en production). Le Hub vérifie donc UNIQUEMENT le serveur
-// du candidat tiré, après le tirage (hub.js → onDraw).
+// ⚠️ LA SANTÉ DES SERVEURS N'EST PAS DANS CE MODULE, ET N'EST PLUS DANS LE
+// TIRAGE DU TOUT. Elle ne dit pas si un jeu convient au groupe, seulement si
+// son serveur est réveillé — et sur Render (plan gratuit) un serveur endormi
+// met ~30 s à répondre. La consulter avant de révéler un jeu transformait des
+// tirages parfaitement valables en « aucun serveur disponible » (constaté en
+// production). Le serveur du jeu se réveille tout seul, plus tard : après
+// « continuer », la page du jeu s'y connecte et c'est elle qui le réveille.
 //
 // ⚠️ Un veto EXCLUT, un cœur PENCHE. `love` n'entre jamais dans le filtre, et
 // un veto n'est jamais un simple malus : personne ne se fait imposer un jeu.
@@ -108,15 +109,11 @@ function weight(game, session) {
 
 // Le catalogue entier évalué pour une session : ce que le salon affiche en
 // permanence, et ce que le tirage relit au moment de tirer.
-// `exclure` : des jeux écartés POUR CE TIRAGE seulement (un serveur qui n'a pas
-// répondu). Ils n'entrent ni dans la liste ni dans les poids, mais rien n'est
-// retenu contre eux au tirage suivant.
-function evaluate(session, games, opts = {}) {
-  const exclure = opts.exclure || [];
+function evaluate(session, games) {
   const out = { games: [], eligible: [], why: {}, weights: {} };
   for (const g of games || []) {
     out.games.push(g.id);
-    const r = exclure.includes(g.id) ? [{ code: 'SERVER_DOWN' }] : reasons(g, session);
+    const r = reasons(g, session);
     if (r.length) { out.why[g.id] = r; continue; }
     out.eligible.push(g.id);
     out.weights[g.id] = weight(g, session);
@@ -139,12 +136,11 @@ function pickWeighted(ids, weights, rand) {
   return ids[ids.length - 1];   // arrondi flottant : le dernier ferme la roue
 }
 
-// Filtrer, pondérer, tirer UN candidat. Le résultat porte tout ce qu'il faut
-// pour l'expliquer : la liste éligible et les poids AU MOMENT du tirage.
-// Le serveur du candidat n'est vérifié qu'après, par le Hub ; s'il ne répond
-// pas, on rappelle cette fonction avec le candidat dans `exclure`.
-function draw(session, games, rand, opts = {}) {
-  const ev = evaluate(session, games, opts);
+// Filtrer, pondérer, tirer. Le résultat porte tout ce qu'il faut pour
+// l'expliquer : la liste éligible et les poids AU MOMENT du tirage. Rien
+// d'autre ne peut l'invalider — ce qui sort d'ici est le jeu de la manche.
+function draw(session, games, rand) {
+  const ev = evaluate(session, games);
   if (!ev.eligible.length) return { error: 'NO_ELIGIBLE_GAME', why: ev.why };
   const gameId = pickWeighted(ev.eligible, ev.weights, rand);
   return { gameId, eligible: ev.eligible, weights: ev.weights, why: ev.why };

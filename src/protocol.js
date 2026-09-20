@@ -30,7 +30,6 @@ const ERRORS = {
   DRAW_IN_PROGRESS: 'un tirage est déjà en cours',
   NOT_DRAWN: 'aucun tirage à confirmer',
   NO_ELIGIBLE_GAME: 'aucun jeu possible pour ce groupe',
-  NO_SERVER_AVAILABLE: 'aucun serveur de jeu disponible pour l\'instant',
   DRAW_FAILED: 'le tirage a échoué',
   MANIFEST_UNAVAILABLE: 'catalogue des jeux indisponible',
   BAD_PREFS: 'préférences invalides',

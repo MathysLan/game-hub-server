@@ -141,16 +141,22 @@ async function main() {
   const fini = await B.until((s) => s.state === 'debrief');
   t('continuer : la session revient au Hub (debrief), le jeu reste tiré', fini.session.draw.gameId === g);
 
-  // ── un serveur de jeu MORT, en isolation : plus rien d'autre n'est possible
+  // ── un serveur de jeu MORT, seul jeu possible : il est tiré quand même
+  // ⚠️ C'EST LE CAS QUI COMPTE. `precision` vise un port fermé : son serveur
+  // est aussi mort qu'un serveur peut l'être. Il doit malgré tout être tiré et
+  // révélé — un serveur endormi sur Render ressemble exactement à ça, et le
+  // groupe n'a aucune raison de perdre sa soirée pour autant.
   A.send({ action: 'prefs', love: [], veto: ['demicercle', 'passeur'] });
   await A.until((s) => JSON.stringify(s.pool.eligible) === '["precision"]', ['session'], 4000);
+  const tMort = Date.now();
   A.send({ action: 'draw' });
-  const mort = await A.erreur('NO_SERVER_AVAILABLE');
-  t('serveur de jeu mort : tiré puis recalé → NO_SERVER_AVAILABLE',
-    !!mort && JSON.stringify(mort.tried) === '["precision"]', JSON.stringify(mort && mort.tried));
-  const apres = await A.until((s) => s.state === 'debrief' && s.pool.health.precision === 'down', ['session'], 4000);
-  t('serveur de jeu mort : le Hub le retient « down », et la soirée continue',
-    apres.session.history.played.length === 1 && apres.session.draw.gameId === g);
+  const mort = await A.until((s) => s.draw && s.draw.n === 2 && s.draw.status === 'drawn', ['session'], 8000);
+  t('serveur de jeu mort : il est tiré et révélé quand même', mort.session.draw.gameId === 'precision', mort.session.draw.gameId);
+  t('serveur de jeu mort : tout de suite, sans attendre un /health', Date.now() - tMort < 2000, `${Date.now() - tMort} ms`);
+  t('serveur de jeu mort : la soirée avance normalement',
+    mort.session.history.played.length === 2 && mort.session.history.played[0] === g, mort.session.history.played.join(' → '));
+  A.send({ action: 'continue' });
+  await A.until((s) => s.state === 'debrief' && s.draw.n === 2, ['session'], 4000);
   A.send({ action: 'prefs', love: [], veto: [] });
   await A.until((s) => s.pool.eligible.length === 3, ['session'], 4000);
 
