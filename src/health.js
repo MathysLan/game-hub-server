@@ -13,8 +13,11 @@
 //   down      a répondu autre chose, ou rien avant TIMEOUT_MS — le jeu est
 //             écarté du tirage pendant DOWN_TTL_MS, puis on retente.
 //
-// Pas de surveillance en continu : on vérifie au moment où ça sert (création
-// d'une session = pré-réveil, et juste avant un tirage).
+// ⚠️ ON NE VÉRIFIE QU'UN SEUL JEU À LA FOIS : celui que le tirage vient de
+// désigner (hub.js → onDraw). Vérifier les sept avant de tirer réveillait tout
+// le parc Render pour rien — et pouvait écarter des jeux parfaitement valables
+// pendant leur réveil. La santé ne filtre plus le catalogue ; elle confirme (ou
+// non) le candidat.
 'use strict';
 
 // 40 s : un réveil Render prend ~30 s. Au-delà, on ne parle plus d'un serveur
@@ -86,13 +89,15 @@ function createHealth(options = {}) {
     if (!game || !game.health) return Promise.resolve('up');     // jeu local : rien à joindre
     if (inflight.has(game.id)) return inflight.get(game.id);
     set(game.id, 'checking');
-    const fin = Date.now() + timeoutMs;
+    const debut = Date.now();
+    const fin = debut + timeoutMs;
     const p = (async () => {
       let r = { ok: false, why: 'aucune tentative' };
-      for (;;) {
+      for (let essai = 1; ; essai++) {
         const reste = fin - Date.now();
         if (reste <= 0) break;
         r = await tentative(game, reste);
+        if (!options.quiet) console.log(`[santé] ${game.id} tentative=${essai} ${r.ok ? 'ok' : r.why}`);
         if (r.ok) return 'up';
         if (r.definitif) break;
         const pause = Math.min(retryMs, fin - Date.now());
@@ -100,20 +105,19 @@ function createHealth(options = {}) {
         await new Promise((ok) => setTimeout(ok, pause));
       }
       // Visible dans les journaux de Render : pourquoi ce jeu est écarté.
-      if (!options.quiet) console.warn(`[santé] ${game.id} injoignable après ${Math.round(timeoutMs / 1000)} s : ${r.why}`);
+      if (!options.quiet) console.warn(`[santé] ${game.id} échec après ${((Date.now() - debut) / 1000).toFixed(1)} s : ${r.why}`);
       return 'down';
     })().then((s) => { inflight.delete(game.id); set(game.id, s); return s; });
     inflight.set(game.id, p);
     return p;
   }
 
-  // Vérifie ce qui n'est pas frais, en parallèle, et attend. Rend l'état de
-  // chaque jeu en ligne AU TERME de cette vérification : { gameId: 'up' |
-  // 'down' }. Ne rejette jamais.
-  function ensure(games) {
-    const list = (games || []).filter((g) => g && g.mode === 'online');
-    return Promise.all(list.map((g) => (frais(g.id) ? etat.get(g.id).status : check(g))))
-      .then((etats) => Object.fromEntries(list.map((g, i) => [g.id, etats[i]])));
+  // UN seul jeu : son état s'il est encore frais (inutile de réveiller deux
+  // fois), sinon une vraie vérification. Ne rejette jamais.
+  function one(game) {
+    if (!game || game.mode !== 'online') return Promise.resolve('up');
+    if (frais(game.id)) return Promise.resolve(etat.get(game.id).status);
+    return check(game);
   }
 
   function status(id) {
@@ -133,7 +137,7 @@ function createHealth(options = {}) {
   // on l'écarte des tirages le temps de DOWN_TTL_MS, comme un /health en échec.
   const markDown = (id) => set(id, 'down');
 
-  return { check, ensure, status, snapshot, markDown };
+  return { check, one, status, snapshot, markDown };
 }
 
 module.exports = { TIMEOUT_MS, UP_TTL_MS, DOWN_TTL_MS, RETRY_MS, createHealth };

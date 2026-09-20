@@ -98,11 +98,14 @@ function createHub(options = {}) {
   // diffusion. Le salon voit donc toujours l'éligibilité à jour : un veto, un
   // micro déclaré, un joueur de plus, un serveur tombé — tout se voit tout de
   // suite, chez tout le monde.
+  // ⚠️ La santé n'entre PAS dans l'éligibilité : elle n'est qu'une information
+  // (le dernier état connu du serveur d'un jeu, souvent « unknown » puisqu'on
+  // ne réveille plus personne à l'avance). Ce que le salon affiche comme
+  // « possible », c'est ce que les RÈGLES disent.
   function poolOf(session) {
     const games = catalog.get();
     if (!games) return { catalog: catalog.status() === 'error' ? 'error' : 'loading', games: [], eligible: [], why: {}, weights: {}, health: {} };
-    const h = health.snapshot(games);
-    return Object.assign({ catalog: 'ready', health: h }, E.evaluate(session, games, h));
+    return Object.assign({ catalog: 'ready', health: health.snapshot(games) }, E.evaluate(session, games));
   }
   const publicOf = (session) => publicSession(session, poolOf(session));
 
@@ -126,12 +129,13 @@ function createHub(options = {}) {
     if (toutesPrevu.unref) toutesPrevu.unref();
   }
 
-  // Pré-réveil : dès qu'un groupe se forme, on demande aux serveurs de jeu
-  // s'ils sont là. Un serveur Render endormi met ~30 s à répondre — le temps
-  // que les amis arrivent, il est réveillé pour le tirage.
-  function prewarm() {
-    catalog.load().then((games) => { broadcastAll(); return health.ensure(games); })
-      .then(() => broadcastAll(), () => broadcastAll());
+  // À la création d'une session, on charge le CATALOGUE (un fichier sur GitHub
+  // Pages), et rien d'autre.
+  // ⚠️ On ne réveille plus les sept serveurs de jeu au passage : c'était sept
+  // réveils Render pour un seul jeu joué, et un jeu encore endormi se
+  // retrouvait écarté du tirage. Seul le serveur du candidat tiré est vérifié.
+  function chargeCatalogue() {
+    catalog.load().then(() => broadcastAll(), () => broadcastAll());
   }
 
   function closeSession(session) {
@@ -193,7 +197,7 @@ function createHub(options = {}) {
     attach(ws, session, r.player);
 
     send(ws, { type: 'created', you: r.player.id, session: publicOf(session) });
-    prewarm();
+    chargeCatalogue();
   }
 
   function onJoin(ws, msg) {
@@ -379,39 +383,62 @@ function createHub(options = {}) {
       broadcastSession(session);
     };
 
-    let games, sante, res;
+    let games;
     try { games = await catalog.load(); }
     catch (_) { return annuler('MANIFEST_UNAVAILABLE'); }
+
+    // ⚠️ UN CANDIDAT, UN SERVEUR VÉRIFIÉ. On tire d'abord selon les RÈGLES,
+    // puis on ne réveille que le serveur du jeu tiré. S'il ne répond pas, ce
+    // jeu sort de CE tirage (et de lui seul) et on tire à nouveau parmi les
+    // autres. Rien n'entre dans l'historique tant qu'un jeu n'est pas confirmé.
+    const ecartes = [];        // candidats dont le serveur n'a pas répondu
     try {
-      // Vérifie les serveurs pas encore vus vivants (en parallèle, 40 s au
-      // plus : un serveur endormi a le temps de se réveiller). Le résultat de
-      // CETTE vérification sert au tirage — pas un cache qui aurait pu vieillir
-      // entre-temps.
-      sante = await health.ensure(games);
+      for (;;) {
+        // Toujours sur l'état de MAINTENANT : un veto posé pendant un réveil compte.
+        const res = E.draw(session, games, random, { exclure: ecartes });
+        if (res.error) {
+          return annuler(ecartes.length ? 'NO_SERVER_AVAILABLE' : 'NO_ELIGIBLE_GAME', { why: res.why, tried: ecartes.slice() });
+        }
+        const jeu = games.find((g) => g.id === res.gameId);
+        console.log(`[tirage] #${draw.n} candidat=${res.gameId}`);
+        // Le client sait qu'on réveille un serveur, sans savoir LEQUEL : le
+        // candidat n'est révélé qu'une fois confirmé (sinon la caisse est
+        // éventée avant de s'ouvrir).
+        draw.waking = true;
+        draw.tried = ecartes.length;
+        broadcastSession(session);
 
-      // Pendant l'attente, la session a pu se fermer : on n'écrit plus rien.
-      if (sessions.get(session.code) !== session || session.draw !== draw) return;
+        const etat = await health.one(jeu);
 
-      // FILTRER → PONDÉRER → TIRER, sur l'état de MAINTENANT (un veto posé
-      // pendant la vérification des serveurs compte).
-      res = E.draw(session, games, sante, random);
+        // Pendant l'attente, la session a pu se fermer ou un autre tirage naître.
+        if (sessions.get(session.code) !== session || session.draw !== draw) return;
+
+        if (etat !== 'up') {
+          console.warn(`[tirage] #${draw.n} candidat=${res.gameId} serveur indisponible → on retire`);
+          ecartes.push(res.gameId);
+          continue;
+        }
+
+        draw.status = 'drawn';
+        draw.waking = false;
+        draw.gameId = res.gameId;
+        draw.eligible = res.eligible;
+        draw.weights = res.weights;
+        draw.drawnAt = Date.now();
+        session.drawCount = draw.n;
+        // Confirmé, et SEULEMENT maintenant : l'historique ne retient que les
+        // jeux réellement tirés — un candidat écarté pour cause de serveur
+        // muet ne doit pas être pénalisé par la récence au tirage suivant.
+        session.history.played.push(res.gameId);
+        console.log(`[tirage] #${draw.n} confirmé=${res.gameId}${ecartes.length ? ' (après ' + ecartes.join(', ') + ')' : ''}`);
+        broadcastSession(session);
+        return;
+      }
     } catch (e) {
       // Un bug ne doit pas laisser la session bloquée en « tirage en cours ».
       console.error('[tirage]', e && e.message);
       return annuler('DRAW_FAILED');
     }
-    if (res.error) return annuler('NO_ELIGIBLE_GAME', { why: res.why });
-
-    draw.status = 'drawn';
-    draw.gameId = res.gameId;
-    draw.eligible = res.eligible;
-    draw.weights = res.weights;
-    draw.drawnAt = Date.now();
-    session.drawCount = draw.n;
-    // Le tirage est définitif dès cet instant : il entre dans l'historique, qui
-    // ne fait que grandir pendant toute la session.
-    session.history.played.push(res.gameId);
-    broadcastSession(session);
   }
 
   // « Continuer » : l'hôte prend acte du jeu tiré. La session revient au Hub,
@@ -435,7 +462,9 @@ function createHub(options = {}) {
     // Le lancement. Un serveur déjà vu mort n'est même pas tenté.
     session.launch = L.create(session, session.draw, game, Date.now(), launchOpts);
     session.state = 'launching';
-    if ((health.snapshot([game])[game.id] || 'up') === 'down') return failLaunch(session, 'SERVER_DOWN');
+    // Le serveur a été vu vivant au moment du tirage ; s'il est retombé entre
+    // temps (un joueur l'a signalé), inutile d'envoyer le groupe dans le vide.
+    if (health.status(game.id) === 'down') return failLaunch(session, 'SERVER_DOWN');
     armLaunchTimer(session);
     broadcastSession(session);
   }

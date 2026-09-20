@@ -61,6 +61,16 @@ function client(nom) {
       };
       voir();
     });
+  c.erreur = (code, ms = 8000) => new Promise((resolve, reject) => {
+    const fin = Date.now() + ms;
+    const voir = () => {
+      const m = [...c.msgs].reverse().find((x) => x.type === 'error' && x.code === code);
+      if (m) return resolve(m);
+      if (Date.now() > fin) return reject(new Error(`${nom} : erreur ${code} jamais reçue`));
+      setTimeout(voir, 25);
+    };
+    voir();
+  });
   return c;
 }
 
@@ -110,24 +120,39 @@ async function main() {
     vuParA.session.code === CODE && vuParB.session.code === CODE);
 
   // ── le tirage, à travers l'assemblage réel (catalogue + santé + hub)
-  const pret = await A.until((s) => s.pool && s.pool.catalog === 'ready' && s.pool.health.precision === 'down'
-    && s.pool.health.passeur === 'up', ['session'], 8000);
-  t('le vrai serveur lit le catalogue et vérifie la santé des jeux', !!pret);
-  t('un serveur de jeu mort est dit « down » et exclu, sans casser le reste',
-    pret.session.pool.why.precision[0].code === 'SERVER_DOWN' && pret.session.pool.eligible.length === 3,
-    pret.session.pool.eligible.join(','));
+  // ⚠️ La santé ne filtre plus le catalogue : le salon montre ce que disent les
+  // RÈGLES, et on ne réveille que le serveur du candidat tiré.
+  const pret = await A.until((s) => s.pool && s.pool.catalog === 'ready', ['session'], 8000);
+  t('le vrai serveur lit le catalogue', !!pret && pret.session.pool.games.length === 6);
+  t('à la création, aucun serveur de jeu n\'a été interrogé',
+    Object.values(pret.session.pool.health).every((h) => h === 'unknown'), JSON.stringify(pret.session.pool.health));
   B.send({ action: 'prefs', love: ['passeur'], veto: ['morpion'] });
   await A.until((s) => !!s.players.find((p) => p.id === 'p_lea' && p.veto.includes('morpion')));
   A.send({ action: 'draw' });
   const tire = await B.until((s) => s.draw && s.draw.status === 'drawn', ['session'], 8000);
   const g = tire.session.draw.gameId;
   t('A tire : B reçoit le jeu tiré par le serveur', ['demicercle', 'passeur'].includes(g), g);
-  t('ni le jeu en veto, ni le serveur mort, ni le jeu à 3 joueurs',
-    JSON.stringify(tire.session.draw.eligible) === '["demicercle","passeur"]');
+  t('le salon garde le serveur mort dans les jeux possibles (les règles ignorent la santé)…',
+    JSON.stringify(tire.session.pool.eligible) === '["demicercle","precision","passeur"]',
+    tire.session.pool.eligible.join(','));
+  t('…mais il n\'est jamais le résultat : le candidat est vérifié avant d\'être annoncé', g !== 'precision');
   t('history.played = [jeu tiré]', JSON.stringify(tire.session.history.played) === JSON.stringify([g]));
   A.send({ action: 'continue' });
   const fini = await B.until((s) => s.state === 'debrief');
   t('continuer : la session revient au Hub (debrief), le jeu reste tiré', fini.session.draw.gameId === g);
+
+  // ── un serveur de jeu MORT, en isolation : plus rien d'autre n'est possible
+  A.send({ action: 'prefs', love: [], veto: ['demicercle', 'passeur'] });
+  await A.until((s) => JSON.stringify(s.pool.eligible) === '["precision"]', ['session'], 4000);
+  A.send({ action: 'draw' });
+  const mort = await A.erreur('NO_SERVER_AVAILABLE');
+  t('serveur de jeu mort : tiré puis recalé → NO_SERVER_AVAILABLE',
+    !!mort && JSON.stringify(mort.tried) === '["precision"]', JSON.stringify(mort && mort.tried));
+  const apres = await A.until((s) => s.state === 'debrief' && s.pool.health.precision === 'down', ['session'], 4000);
+  t('serveur de jeu mort : le Hub le retient « down », et la soirée continue',
+    apres.session.history.played.length === 1 && apres.session.draw.gameId === g);
+  A.send({ action: 'prefs', love: [], veto: [] });
+  await A.until((s) => s.pool.eligible.length === 3, ['session'], 4000);
 
   {
     const h = await health();
