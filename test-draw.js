@@ -120,11 +120,14 @@ async function main() {
   // qui se crée ne doit toucher AUCUN serveur de jeu.
   t('création : aucun serveur de jeu n\'est réveillé', appels.length === 0, appels.map((x) => x.id).join(',') || 'aucun appel');
   t('santé : le salon n\'annonce donc aucun état connu', Object.values(s0.pool.health).every((h) => h === 'unknown'), JSON.stringify(s0.pool.health));
-  t('éligibilité à 2 (sans micro ni consentement) : morpion, demicercle, precision, passeur',
-    JSON.stringify(s0.pool.eligible) === '["morpion","demicercle","precision","passeur"]', s0.pool.eligible.join(','));
-  t('why : Qui Ment ? « il faut 3 », Imitation « micro », Ban « consentement », P4 « local »',
-    s0.pool.why.quiment[0].code === 'TOO_FEW' && s0.pool.why.imitation[0].code === 'NEEDS' && s0.pool.why.imitation[0].need === 'mic'
-    && s0.pool.why.ban[0].need === 'consent' && s0.pool.why.puissance4[0].code === 'LOCAL_ONLY');
+  // ⚠️ Micro et avertissement sont acquis d'office : l'écran « Ce que tu
+  // apportes » n'existe plus. Imitation et le Ban ne sont donc plus écartés que
+  // par leurs bornes de joueurs — ici, à 2, ils passent.
+  t('éligibilité à 2 : morpion, imitation, demicercle, ban, precision, passeur',
+    JSON.stringify(s0.pool.eligible) === '["morpion","imitation","demicercle","ban","precision","passeur"]', s0.pool.eligible.join(','));
+  t('why : Qui Ment ? « il faut 3 », P4 « local » — et plus une seule raison de capacité',
+    s0.pool.why.quiment[0].code === 'TOO_FEW' && s0.pool.why.puissance4[0].code === 'LOCAL_ONLY'
+    && !Object.values(s0.pool.why).flat().some((r) => r.code === 'NEEDS'), JSON.stringify(s0.pool.why));
   t('état public : draw vide, historique vide, contrainte nulle', s0.draw === null && s0.history.played.length === 0 && s0.constraints.maxMinutes === null);
 
   // ── préférences : chacun pour soi
@@ -152,20 +155,23 @@ async function main() {
   await a.until((x) => JSON.stringify(joueur(x, 'p_bbbb').veto) === '["morpion"]', 3000, m);
 
   // ── capacités
+  // ⚠️ Plus aucune interface ne les déclare, mais l'action reste au protocole et
+  // la règle NEEDS reste vraie : un client qui pose explicitement une capacité à
+  // false écarte encore le jeu. C'est le filet si un jour un besoin revient.
   m = a.mark();
-  a.send({ action: 'caps', caps: { mic: true } });
-  s = await a.until((x) => joueur(x, 'p_aaaa').caps.mic === true, 3000, m);
-  t('caps : A seul a un micro → Imitation toujours exclue, B nommé',
-    JSON.stringify(s.pool.why.imitation) === '[{"code":"NEEDS","need":"mic","players":["p_bbbb"]}]');
+  t('caps : par défaut, tout le monde a le micro et accepte l\'avertissement',
+    joueur(a.last(), 'p_aaaa').caps.mic === true && joueur(a.last(), 'p_bbbb').caps.consent === true,
+    JSON.stringify(joueur(a.last(), 'p_aaaa').caps));
+  b.send({ action: 'caps', caps: { mic: false } });
+  s = await a.until((x) => joueur(x, 'p_bbbb').caps.mic === false, 3000, m);
+  t('caps : B déclare ne pas avoir de micro → Imitation exclue, B nommé',
+    JSON.stringify(s.pool.why.imitation) === '[{"code":"NEEDS","need":"mic","players":["p_bbbb"]}]', JSON.stringify(s.pool.why.imitation));
   m = a.mark();
   b.send({ action: 'caps', caps: { mic: true } });
   s = await a.until((x) => joueur(x, 'p_bbbb').caps.mic === true, 3000, m);
-  t('caps : les deux ont un micro → Imitation éligible', s.pool.eligible.includes('imitation'));
+  t('caps : B revient dessus → Imitation à nouveau éligible', s.pool.eligible.includes('imitation'));
   b.send({ action: 'caps', caps: { mic: 'oui' } });
   t('caps : une valeur non booléenne est refusée', !!(await b.error('BAD_CAPS')));
-  m = a.mark();
-  b.send({ action: 'caps', caps: { mic: false } });
-  await a.until((x) => joueur(x, 'p_bbbb').caps.mic === false, 3000, m);
 
   // ── hôte
   b.send({ action: 'draw' });
@@ -236,9 +242,10 @@ async function main() {
   t('2e tirage : history.played = [g1, g2], le premier toujours là',
     d2.history.played.length === 2 && d2.history.played[0] === g1 && d2.history.played[1] === d2.draw.gameId,
     d2.history.played.join(' → '));
-  const attendu = { passeur: 1.5, demicercle: 1, precision: 1 };
-  attendu[g1] = Math.round(attendu[g1] * 0.15 * 10000) / 10000;
-  t('2e tirage : le jeu précédent pèse ×0,15 (récence)', d2.draw.weights[g1] === attendu[g1], JSON.stringify(d2.draw.weights));
+  const base = g1 === 'passeur' ? 1.5 : 1;         // A aime Passeur, le reste est neutre
+  const attendu = Math.round(base * 0.15 * 10000) / 10000;
+  t('2e tirage : le jeu précédent pèse ×0,15 (récence)', d2.draw.weights[g1] === attendu,
+    `${g1} : ${d2.draw.weights[g1]} au lieu de ${attendu} — ${JSON.stringify(d2.draw.weights)}`);
   m = a.mark();
   a.send({ action: 'continue' });
   await a.until((x) => x.state === 'debrief' && x.draw.n === 2, 3000, m);

@@ -83,10 +83,20 @@ function addPlayer(s, player) {
     id: player.id,
     name: player.name,
     avatar: player.avatar,
-    // Lus par le moteur de tirage (engine.js). `caps` est DÉCLARATIF et
-    // commence à false : on ne suppose jamais une capacité. `veto` et `love`
-    // ne sont modifiables que par le joueur lui-même (action `prefs`).
-    caps: { mic: false },
+    // Lus par le moteur de tirage (engine.js). `veto` et `love` ne sont
+    // modifiables que par le joueur lui-même (action `prefs`).
+    //
+    // ⚠️ `caps` commence désormais à TRUE. L'écran « Ce que tu apportes » a
+    // disparu de /games/ : plus personne ne déclare rien, et un défaut à false
+    // aurait rendu Imitation et le Ban impossibles pour tout le monde, pour
+    // toujours. Le Hub n'a jamais testé ces capacités de toute façon — c'est le
+    // jeu qui demande le micro à l'entrée, et l'avertissement est affiché sur
+    // sa page. La règle NEEDS reste dans engine.js et reste vraie : un joueur
+    // dont une capacité vaut explicitement false écarte encore le jeu.
+    // ⚠️ `cam` n'est PAS dans ce défaut, parce qu'aucun jeu ne le demande
+    // aujourd'hui. Le jour où un jeu déclarera `needs: ['cam']`, il sera
+    // impossible pour tout le monde en silence — l'ajouter ici ce jour-là.
+    caps: { mic: true, consent: true },
     veto: [],
     love: [],
     connected: true,

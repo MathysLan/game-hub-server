@@ -93,7 +93,12 @@ console.log('Modèle de session — hors réseau\n');
   const a = S.addPlayer(s, { id: 'p_aaaa', name: 'A', avatar: { kind: 'emoji', emoji: '🦊' } });
   t('le premier joueur devient hôte', s.hostId === 'p_aaaa');
   t('champs préparés pour le randomizer',
-    a.player.caps.mic === false && Array.isArray(a.player.veto) && Array.isArray(a.player.love));
+    Array.isArray(a.player.veto) && Array.isArray(a.player.love));
+  // ⚠️ Micro et avertissement sont acquis d'office : l'écran « Ce que tu
+  // apportes » n'existe plus, personne ne déclare rien, et un défaut à false
+  // rendrait Imitation et le Ban impossibles pour tout le monde.
+  t('capacités acquises par défaut (plus rien à déclarer)',
+    a.player.caps.mic === true && a.player.caps.consent === true, JSON.stringify(a.player.caps));
 
   S.addPlayer(s, { id: 'p_bbbb', name: 'B', avatar: { kind: 'emoji', emoji: '🐼' } });
   t('un deuxième joueur ne devient pas hôte', s.hostId === 'p_aaaa');

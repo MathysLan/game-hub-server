@@ -131,11 +131,13 @@ async function main() {
   A.send({ action: 'draw' });
   const tire = await B.until((s) => s.draw && s.draw.status === 'drawn', ['session'], 8000);
   const g = tire.session.draw.gameId;
-  t('A tire : B reçoit le jeu tiré par le serveur', ['demicercle', 'passeur'].includes(g), g);
-  t('le salon garde le serveur mort dans les jeux possibles (les règles ignorent la santé)…',
-    JSON.stringify(tire.session.pool.eligible) === '["demicercle","precision","passeur"]',
+  t('A tire : B reçoit un jeu tiré par le serveur, pris dans SA liste', !!g && tire.session.pool.eligible.includes(g), g);
+  // ⚠️ Micro acquis d'office (plus d'écran « Ce que tu apportes ») : Imitation
+  // passe. Et `precision`, dont le /health vise un port fermé, reste possible —
+  // la santé n'écarte plus rien.
+  t('éligibles : Imitation (micro acquis) et le serveur mort de Précision compris',
+    JSON.stringify(tire.session.pool.eligible) === '["imitation","demicercle","precision","passeur"]',
     tire.session.pool.eligible.join(','));
-  t('…mais il n\'est jamais le résultat : le candidat est vérifié avant d\'être annoncé', g !== 'precision');
   t('history.played = [jeu tiré]', JSON.stringify(tire.session.history.played) === JSON.stringify([g]));
   A.send({ action: 'continue' });
   const fini = await B.until((s) => s.state === 'debrief');
@@ -146,7 +148,7 @@ async function main() {
   // est aussi mort qu'un serveur peut l'être. Il doit malgré tout être tiré et
   // révélé — un serveur endormi sur Render ressemble exactement à ça, et le
   // groupe n'a aucune raison de perdre sa soirée pour autant.
-  A.send({ action: 'prefs', love: [], veto: ['demicercle', 'passeur'] });
+  A.send({ action: 'prefs', love: [], veto: ['imitation', 'demicercle', 'passeur'] });
   await A.until((s) => JSON.stringify(s.pool.eligible) === '["precision"]', ['session'], 4000);
   const tMort = Date.now();
   A.send({ action: 'draw' });
@@ -158,7 +160,7 @@ async function main() {
   A.send({ action: 'continue' });
   await A.until((s) => s.state === 'debrief' && s.draw.n === 2, ['session'], 4000);
   A.send({ action: 'prefs', love: [], veto: [] });
-  await A.until((s) => s.pool.eligible.length === 3, ['session'], 4000);
+  await A.until((s) => s.pool.eligible.length === 4, ['session'], 4000);
 
   {
     const h = await health();

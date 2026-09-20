@@ -5,8 +5,14 @@
 // Le catalogue utilisé ici a EXACTEMENT les valeurs du manifest réel du
 // portfolio (data/games.manifest.json, 2026-09-19) : bornes de joueurs,
 // fourchettes de durée, besoins, modes. On ne teste pas un moteur contre des
-// jeux imaginaires. La santé des serveurs, elle, n'est plus ici du tout : le
-// Hub vérifie le serveur du seul candidat tiré (voir test-draw.js).
+// jeux imaginaires. La santé des serveurs n'est plus ici du tout, et n'est plus
+// dans le tirage non plus (voir test-candidat.js).
+//
+// ⚠️ Les sessions viennent du VRAI modèle (src/session.js), où micro et
+// avertissement sont acquis d'office depuis que l'écran « Ce que tu apportes »
+// a disparu de /games/. Imitation et le Ban ne sont donc plus écartés que par
+// leurs bornes de joueurs. Un test qui veut vérifier la règle NEEDS doit poser
+// la capacité à false explicitement.
 'use strict';
 
 const E = require('./src/engine.js');
@@ -77,17 +83,28 @@ t('2. max : Puissance 4 possible en solo', elig(session(1)).includes('puissance4
 // Plusieurs tailles de groupe, contre le manifest réel.
 const attendu = {
   1: ['puissance4', 'precision', 'passeur'],
-  2: ['morpion', 'demicercle', 'precision', 'passeur'],
-  3: ['demicercle', 'precision', 'passeur', 'quiment'],
-  8: ['demicercle', 'precision', 'passeur', 'quiment'],
-  9: ['demicercle', 'precision'],
+  2: ['morpion', 'imitation', 'demicercle', 'ban', 'precision', 'passeur'],
+  3: ['imitation', 'demicercle', 'ban', 'precision', 'passeur', 'quiment'],
+  8: ['imitation', 'demicercle', 'ban', 'precision', 'passeur', 'quiment'],
+  9: ['demicercle', 'ban', 'precision'],
   11: ['precision'],
   12: ['precision'],
 };
 for (const [n, liste] of Object.entries(attendu)) {
   const e = elig(session(+n));
-  t(`groupe de ${n} (sans micro ni consentement) : ${liste.join(', ')}`, JSON.stringify(e) === JSON.stringify(liste), e.join(','));
+  t(`groupe de ${n} : ${liste.join(', ')}`, JSON.stringify(e) === JSON.stringify(liste), e.join(','));
 }
+// ⚠️ LE POINT QUI A CHANGÉ : en solo, Imitation et le Ban ne sont écartés que
+// par leur minimum de 2 joueurs — plus jamais par une capacité non déclarée.
+t('solo : Imitation bloquée par les 2 joueurs, PAS par le micro',
+  JSON.stringify(why(session(1), 'imitation')) === '["TOO_FEW"]', why(session(1), 'imitation').join(','));
+t('solo : le Ban bloqué par les 2 joueurs, PAS par l\'avertissement',
+  JSON.stringify(why(session(1), 'ban')) === '["TOO_FEW"]', why(session(1), 'ban').join(','));
+t('à 2+ : micro et avertissement sont acquis, les deux jeux sont possibles',
+  elig(session(2)).includes('imitation') && elig(session(2)).includes('ban'));
+// La règle NEEDS elle-même n'a pas bougé : elle attend juste un false explicite.
+t('la règle NEEDS tient toujours : une capacité à false écarte encore le jeu',
+  (() => { const r = why(session(3, (x) => { x.players[1].caps.mic = false; }), 'imitation'); return JSON.stringify(r) === '["NEEDS"]'; })());
 
 // ── 3. min/max duration
 const dur = (m) => session(3, (s) => { s.constraints = { maxMinutes: m }; });
@@ -133,8 +150,8 @@ t('6. love : n\'entre PAS dans le filtre — un cœur ne rend pas possible un je
 t('6. love : le jeu aimé sort plus souvent, sans être systématique', (() => {
   const r = prng(11); let n = 0;
   for (let i = 0; i < 5000; i++) if (E.draw(love, GAMES, r).gameId === 'passeur') n++;
-  // 4 jeux éligibles, poids 2+1+1+1 = 5 → attendu 40 %
-  return n > 1800 && n < 2200;
+  // 6 jeux éligibles à 3 joueurs, poids 2 + 1×5 = 7 → attendu 2/7 ≈ 28,6 %
+  return n > 1280 && n < 1580;
 })());
 t('6. love + veto sur le même jeu : le veto l\'emporte (prefs)', (() => {
   const r = readPrefs({ love: ['passeur', 'ban'], veto: ['passeur'] }, null);
@@ -149,8 +166,8 @@ t('7. récence : deux tirages avant → 0,4 ; trois → 0,7 ; quatre → 1',
 t('7. récence : c\'est le DERNIER passage qui compte', E.recency('passeur', ['passeur', 'quiment', 'passeur']) === 0.15);
 t('7. récence : réduit, n\'interdit pas — le jeu reste éligible', elig(rec(['passeur'])).includes('passeur'));
 t('7. récence : à deux jeux possibles, le même peut retomber (rarement)', (() => {
-  // 2 joueurs, micro/consent absents, Morpion en veto → demicercle, precision, passeur. On en exclut un de plus.
-  const s = session(2, (x) => { x.players[0].veto = ['morpion', 'demicercle']; x.history.played = ['passeur']; });
+  // 2 joueurs : on ne laisse volontairement que precision et passeur.
+  const s = session(2, (x) => { x.players[0].veto = ['morpion', 'imitation', 'demicercle', 'ban']; x.history.played = ['passeur']; });
   const r = prng(3); let meme = 0;
   for (let i = 0; i < 4000; i++) if (E.draw(s, GAMES, r).gameId === 'passeur') meme++;
   // poids : precision 1, passeur 0,15 → 13 % attendus
@@ -181,7 +198,7 @@ t('8. … et le tirage garde toutes ses chances de tomber dessus', (() => {
 })());
 
 // ── 9. aucun jeu disponible
-const vide = session(2, (s) => { s.players[0].veto = ['morpion', 'demicercle', 'precision', 'passeur']; });
+const vide = session(2, (s) => { s.players[0].veto = ['morpion', 'imitation', 'demicercle', 'ban', 'precision', 'passeur']; });
 const d9 = E.draw(vide, GAMES, prng(1));
 t('9. aucun jeu : erreur explicite, pas de repli silencieux', d9.error === 'NO_ELIGIBLE_GAME' && !d9.gameId);
 t('9. aucun jeu : chaque jeu garde sa raison', Object.keys(d9.why).length === 8, Object.keys(d9.why).join(','));
@@ -201,8 +218,9 @@ t('10. pondéré : le résultat appartient TOUJOURS à la liste éligible', (() 
 })());
 t('10. pondéré : sans préférence, répartition uniforme (±3 %)', (() => {
   const r = prng(9); const c = {}; const s = session(3);
-  for (let i = 0; i < 8000; i++) { const g = E.draw(s, GAMES, r).gameId; c[g] = (c[g] || 0) + 1; }
-  return Object.values(c).length === 4 && Object.values(c).every((v) => v > 1760 && v < 2240);
+  for (let i = 0; i < 12000; i++) { const g = E.draw(s, GAMES, r).gameId; c[g] = (c[g] || 0) + 1; }
+  // 6 jeux éligibles à 3 joueurs → 2000 chacun
+  return Object.values(c).length === 6 && Object.values(c).every((v) => v > 1880 && v < 2120);
 })());
 t('10. l\'ordre est FILTRER → PONDÉRER → TIRER : un jeu exclu n\'a pas de poids',
   !('quiment' in E.evaluate(session(2), GAMES).weights));
