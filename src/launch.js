@@ -56,6 +56,10 @@ function create(session, draw, game, now, opts = {}) {
     entered: [],
     missed: [],
     failed: {},                          // playerId → raison (un invité qui n'a pas pu entrer)
+    // playerId (Hub) → identifiant du joueur DANS la room du jeu, déclaré par
+    // chacun pour lui-même (voir scores.js). Interne : ne sort jamais.
+    seats: {},
+    scored: false,                       // le classement final est-il revenu ?
     reason: null,                        // raison d'échec du lancement entier
     createdAt: now,
     deadline: now + (opts.createMs || CREATE_MS),
@@ -136,6 +140,7 @@ function publicLaunch(l, now) {
     missed: l.missed.slice(),
     failed: Object.assign({}, l.failed),
     reason: l.reason,
+    scored: !!l.scored,
     expiresInMs: (l.stage === 'create' || l.stage === 'join') ? Math.max(0, l.deadline - now) : null,
   };
 }

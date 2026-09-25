@@ -4,10 +4,12 @@
 // ce qui permet de le tester seul (test-session.js) et ce qui garantit qu'un
 // socket ne peut pas se retrouver dans un état public par distraction.
 //
-// ⚠️ CE QUE CE MODULE NE FERA JAMAIS : connaître une règle de jeu, un score, un
-// secret, un contenu. Le Hub oriente un groupe vers un serveur de jeu ; c'est
-// ce serveur-là qui arbitre. Si un jour une notion de gameplay apparaît dans ce
-// fichier, c'est que la frontière a bougé au mauvais endroit.
+// ⚠️ CE QUE CE MODULE NE FERA JAMAIS : connaître une règle de jeu, un score DE
+// PARTIE, un secret, un contenu. Le Hub oriente un groupe vers un serveur de
+// jeu ; c'est ce serveur-là qui arbitre. Si un jour une notion de gameplay
+// apparaît dans ce fichier, c'est que la frontière a bougé au mauvais endroit.
+// Le seul score qui vit ici est celui de la SOIRÉE (`scores`), que le Hub tient
+// à partir des classements que les jeux lui rendent (voir scores.js).
 'use strict';
 
 // Les six états :
@@ -62,7 +64,15 @@ function createSession(code, options = {}) {
     // `played` grandit à chaque tirage et n'est JAMAIS remis à zéro dans une
     // session : c'est lui qui nourrit la récence. Une nouvelle session repart
     // d'un historique vide. `usedContent` reste vide (phases tardives).
-    history: { played: [], usedContent: {} },
+    //
+    // `games` : les parties TERMINÉES dont le classement est revenu au Hub,
+    // dans l'ordre (voir scores.js). Même règle que `played` : jamais vidé
+    // pendant la session, jamais transmis à la suivante.
+    history: { played: [], usedContent: {}, games: [] },
+    // Le score de la soirée : playerId → points cumulés. Commence vide (0 pour
+    // tout le monde), ne fait que grandir, meurt avec la session. Seul
+    // scores.apply() l'écrit — jamais un message de client directement.
+    scores: {},
     // Réglée par l'hôte : plafond de durée comparé au minutes.max du manifest.
     constraints: { maxMinutes: null },
     // Le lancement du jeu tiré (launch.js), ou null.

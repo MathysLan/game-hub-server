@@ -7,7 +7,7 @@
   "engines": { "node": ">=18" },
   "scripts": {
     "start": "node src/server.js",
-    "test": "node test-session.js && node test-engine.js && node test-candidat.js && node test.js && node test-presence.js && node test-draw.js && node test-launch.js && node test-handoff.js && node test-e2e.js"
+    "test": "node test-session.js && node test-engine.js && node test-candidat.js && node test.js && node test-presence.js && node test-draw.js && node test-launch.js && node test-handoff.js && node test-scores.js && node test-e2e.js"
   },
   "dependencies": { "ws": "^8.18.0" },
   "license": "MIT"

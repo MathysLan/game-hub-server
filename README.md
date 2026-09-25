@@ -11,8 +11,9 @@ PROFIL / JOUEURS  →  SESSION  →  SÉLECTION (tirage)  →  (plus tard) HANDO
 
 ## Ce que le Hub ne fait pas — et ne doit jamais faire
 
-Il ne connaît **aucune règle**, **aucun score**, **aucun secret**, **aucun
-contenu**. Les sept serveurs de jeu (morpion, imitation, demicercle, ban,
+Il ne connaît **aucune règle**, **aucun score de partie**, **aucun secret**,
+**aucun contenu**. Le seul score qu'il tient est celui de la **soirée**, calculé
+à partir du classement que le jeu lui rend (voir « Score de soirée »). Les sept serveurs de jeu (morpion, imitation, demicercle, ban,
 precision, passeur, qui-ment) restent seuls arbitres de leurs parties. Si une
 notion de gameplay apparaît un jour dans `src/`, c'est que la frontière a bougé
 au mauvais endroit.
@@ -23,8 +24,7 @@ Volontairement absents :
 
 | | |
 |---|---|
-| handoff des SIX autres jeux (seul Le Passeur est branché) | phases suivantes |
-| score cumulé de soirée | phase suivante |
+| score de soirée pour les SIX autres jeux (seul Le Passeur rend son classement) | phases suivantes |
 | historique de CONTENU (`usedContent`), rejouer | phases tardives |
 | compte, authentification, base de données | jamais |
 | matchmaking public | jamais — c'est un Hub entre amis |
@@ -58,7 +58,9 @@ manifest publié par GitHub Pages, `https://mathyslan.github.io/data/games.manif
   sockets: Map,          // à CÔTÉ des joueurs, jamais dedans
   draw: null,            // le tirage courant, ou le dernier confirmé (voir « Randomizer »)
   drawCount: 0,          // numérote les tirages
-  history: { played: [], usedContent: {} },   // played grandit à chaque tirage, jamais remis à zéro
+  history: { played: [], usedContent: {}, games: [] },   // played grandit à chaque tirage, jamais remis à zéro ;
+                                                          // games = parties dont le classement est revenu
+  scores: {},            // score de SOIRÉE : playerId → points cumulés (voir « Score de soirée »)
   constraints: { maxMinutes: null },           // réglé par l'hôte
   maxPlayers, graceMs
 }
@@ -117,8 +119,9 @@ renvoie `{ type }`, en JSON sur un seul socket.
 | `constraints` | `maxMinutes` (ou `null`) | **hôte** — durée maximale d'un jeu |
 | `draw` | — | **hôte** — « tire le prochain jeu ». Aucun autre champ n'est lu |
 | `continue` | — | **hôte** — prend acte du jeu tiré (et lance le handoff si le jeu le sait) |
-| `launched` | `drawId`, `roomCode` | **hôte du lancement** — sa page de jeu a créé la room |
-| `entered` | `drawId`, `roomCode` | chacun — sa page de jeu est entrée dans CETTE room |
+| `launched` | `drawId`, `roomCode`, `gamePlayerId?` | **hôte du lancement** — sa page de jeu a créé la room (et il y est assis à cette place) |
+| `entered` | `drawId`, `roomCode`, `gamePlayerId?` | chacun — sa page de jeu est entrée dans CETTE room, à cette place |
+| `results` | `drawId`, `gameId`, `results[]` | **hôte du lancement** — le classement final de la partie (score de soirée) |
 | `started` | `drawId` | **hôte du lancement** — la partie a démarré |
 | `ended` | `drawId` | **hôte** — la partie est finie, retour au Hub |
 | `abort` | `drawId`, `reason`, `detail` | création/entrée impossible, ou annulation (hôte) |
@@ -133,11 +136,11 @@ renvoie `{ type }`, en JSON sur un seul socket.
 | `error` | `code`, `message` |
 
 `session` est l'**état public** : `{ code, state, hostId, maxPlayers, players[],
-constraints, draw, history, pool }`. Ni socket, ni identifiant interne.
+constraints, draw, history, scores, launch, pool }`. Ni socket, ni identifiant interne.
 `pool` = ce que le moteur dit du catalogue pour CE groupe, recalculé à chaque
 diffusion : `{ catalog, games[], eligible[], why{}, weights{}, health{} }`.
 `launch` = le lancement en cours : `{ drawId, gameId, url, stage, hostId,
-roomCode, expected[], entered[], waiting[], missed[], failed{}, reason,
+roomCode, expected[], entered[], waiting[], missed[], failed{}, reason, scored,
 expiresInMs }` (null hors lancement).
 Un `error` `NO_ELIGIBLE_GAME` porte en plus `why`.
 
@@ -173,6 +176,9 @@ proposer la bonne suite. Le `message` humain reste au même endroit.
 | `LAUNCH_EXPIRED` | déclaré après l'échéance |
 | `BAD_ROOM_CODE` | code de room mal formé |
 | `WRONG_ROOM` | ce n'est pas la room du groupe |
+| `BAD_RESULTS` | classement mal formé (rang, points, place en double, aucun premier…) |
+| `GAME_MISMATCH` | classement d'un autre jeu que celui lancé |
+| `RESULTS_ALREADY` | le classement de ce lancement est déjà compté |
 
 ## Décisions, et pourquoi
 
@@ -352,6 +358,39 @@ fin de partie                 → ended            état debrief, prêt à retir
 - **Une session sans personne de connecté n'est PAS fermée** pendant
   `launching` / `inGame` : tout le groupe navigue en même temps.
 
+## Score de soirée (`src/scores.js`, module pur)
+
+Deux autorités qui ne se mélangent pas : **le jeu** reste maître de SA partie
+(qui a gagné, avec combien), **le Hub** est maître de la SOIRÉE.
+
+```
+chaque joueur, en entrant dans la room  → launched / entered  { gamePlayerId }   sa place, déclarée par LUI
+fin de partie, page de l'hôte           → results { drawId, gameId, results: [{ gamePlayerId, rank, points }] }
+                                        → ended
+```
+
+- **Le lien joueur du jeu ↔ joueur du Hub** : l'hôte ne connaît pas
+  l'identifiant de jeu des autres. Chacun déclare donc le sien en entrant, et
+  le Hub relie une ligne du classement à la personne qui s'est assise à cette
+  place. Une place déjà prise par un autre est refusée : l'hôte ne peut pas
+  attribuer de points à quelqu'un d'autre. Les places ne sortent jamais.
+- **Validations** : hôte du lancement (ou hôte actuel s'il est parti), `drawId`
+  du lancement en cours, `gameId` du jeu lancé, partie lancée (`playing` ou
+  `ended`), **une seule fois par lancement** (une revanche dans la même room ne
+  compte pas), forme du classement. Une place inconnue du Hub (quelqu'un entré
+  dans la room sans le Hub) occupe son rang mais ne marque rien.
+- **Conversion, commune à tous les jeux** :
+  `points de soirée = 10 × (nombre de classés − rang + 1)` — 10 par joueur
+  battu, plus 10 pour avoir joué. À trois : 30 / 20 / 10 ; un ex æquo partage
+  le rang. Pourquoi le rang : les points des jeux ne se comparent pas (Le
+  Passeur va de 3 à 12 manches, le Morpion n'a pas de points), un classement
+  si. Les points du jeu sont gardés tels quels dans `history.games`.
+- `scores` commence vide (0 pour tous), survit aux tirages successifs et aux
+  reconnexions, meurt avec la session.
+- ⚠️ **Limite assumée** : le serveur du jeu ne parle pas au Hub, donc le
+  classement transite par le navigateur de l'hôte. Même confiance que pour le
+  code de room ; entre amis, ça suffit.
+
 ## HTTP
 
 ```
@@ -374,6 +413,7 @@ plus parler à un serveur ancien — pas à chaque correctif.
 | `src/protocol.js` | messages acceptés, codes d'erreur | non |
 | `src/engine.js` | **le moteur de tirage** : filtre, poids, tirage — pur | non |
 | `src/launch.js` | **le lancement** : états, validations, attente — pur | non |
+| `src/scores.js` | **le score de soirée** : places, validation, conversion — pur | non |
 | `src/prefs.js` | validation de prefs, caps, contrainte | non |
 | `src/catalog.js` | lecture et validation du manifest | HTTP (GET) |
 | `src/health.js` | santé des serveurs de jeu | HTTP (GET) |
@@ -399,6 +439,7 @@ node test-draw.js      # 57 — randomizer sur vraies connexions : prefs, caps, 
 node test-launch.js    # 43 — le lancement, module pur
 node test-handoff.js   # 42 — le lancement sur vraies connexions : rôles, codes,
                        #      concurrence, délais, échecs, changement d'hôte
+node test-scores.js    # 53 — score de soirée : module pur, puis `results` sur vraies connexions
 node test-e2e.js       # 26 — le vrai serveur, HTTP et tirage compris
 ```
 

@@ -47,6 +47,15 @@ function publicDraw(d) {
   };
 }
 
+// Une partie terminée, telle que le Hub l'a comptée. Pas les identifiants de
+// jeu (`seats`) : ils ne servent qu'à relier, pas à afficher.
+function publicGame(g) {
+  return {
+    n: g.n, drawId: g.drawId, gameId: g.gameId, at: g.at, players: g.players,
+    results: g.results.map((r) => ({ playerId: r.playerId, name: r.name, rank: r.rank, gamePoints: r.gamePoints, points: r.points })),
+  };
+}
+
 // `pool` : ce que le moteur dit du catalogue POUR CE GROUPE, recalculé à
 // chaque diffusion (voir hub.js). Il voyage en permanence, pour que chacun
 // voie pourquoi un jeu est exclu sans avoir à tirer.
@@ -59,10 +68,12 @@ function publicSession(s, pool) {
     players: s.players.map((p) => publicPlayer(p, s.hostId)),
     constraints: { maxMinutes: s.constraints ? s.constraints.maxMinutes : null },
     draw: publicDraw(s.draw),
-    history: { played: s.history.played.slice(), usedContent: s.history.usedContent },
+    history: { played: s.history.played.slice(), usedContent: s.history.usedContent,
+      games: (s.history.games || []).map(publicGame) },
+    scores: Object.assign({}, s.scores || {}),
     launch: publicLaunch(s.launch, Date.now()),
     pool: pool || null,
   };
 }
 
-module.exports = { publicPlayer, publicDraw, publicSession };
+module.exports = { publicPlayer, publicDraw, publicGame, publicSession };

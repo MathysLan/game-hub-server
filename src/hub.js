@@ -12,6 +12,7 @@ const { newCode, normalizeCode } = require('./codes.js');
 const { readPlayer } = require('./identity.js');
 const { readPrefs, readCaps, readConstraints } = require('./prefs.js');
 const L = require('./launch.js');
+const SC = require('./scores.js');
 const { publicSession } = require('./serialize.js');
 const { ERRORS, LAUNCH_FAILURES, parse } = require('./protocol.js');
 
@@ -514,6 +515,9 @@ function createHub(options = {}) {
     const r = L.checkLaunched(l, player.id, msg, Date.now());
     if (r.error) return fail(ws, r.error);
     L.applyLaunched(l, r.code, Date.now(), launchOpts);
+    // Sa place dans la room (facultative : un jeu qui ne la donne pas se
+    // lance pareil, il ne rapportera simplement aucun point de soirée).
+    if (msg.gamePlayerId != null) SC.seat(l, player.id, msg.gamePlayerId);
     maybePlaying(session);
     armLaunchTimer(session);
     broadcastSession(session);
@@ -528,6 +532,9 @@ function createHub(options = {}) {
     const r = L.checkEntered(l, player.id, msg);
     if (r.error) return fail(ws, r.error);
     L.applyEntered(l, player.id);
+    // Sa place dans la room, déclarée par LUI (voir scores.js). Redéclarée à
+    // chaque entrée : un retour au salon du jeu lui donne un nouvel identifiant.
+    if (msg.gamePlayerId != null) SC.seat(l, player.id, msg.gamePlayerId);
     maybePlaying(session);
     broadcastSession(session);
   }
@@ -547,8 +554,38 @@ function createHub(options = {}) {
     broadcastSession(m.session);
   }
 
-  // La partie est finie : retour au Hub, prêt pour le tirage suivant. Pas de
-  // score de soirée à cette phase — c'est ici qu'il viendra se brancher.
+  // Le classement final d'une partie → le score de la soirée (scores.js).
+  //
+  // Validé dans cet ordre, et chaque refus a son code :
+  //   - l'émetteur est dans la session, et c'est l'hôte du lancement (ou, s'il
+  //     est parti, l'hôte actuel — la même règle que `ended`) ;
+  //   - le drawId est CELUI du lancement en cours, le gameId celui du jeu
+  //     lancé : un classement d'une autre partie ne compte pas ;
+  //   - la partie est lancée (stage playing, ou ended juste avant) ;
+  //   - une seule fois par lancement : une revanche jouée dans la même room ne
+  //     compte pas une seconde fois ;
+  //   - la forme du classement (rangs, points, places uniques).
+  // Les joueurs sont reliés par la place que CHACUN a déclarée en entrant ;
+  // une place inconnue du Hub occupe son rang mais ne marque rien.
+  function onResults(ws, msg) {
+    const m = me(ws);
+    if (!m) return fail(ws, 'NOT_IN_SESSION');
+    const { session, player } = m;
+    const l = session.launch;
+    if (!l || msg.drawId !== l.drawId) return fail(ws, 'LAUNCH_MISMATCH');
+    if (player.id !== l.hostId && player.id !== session.hostId) return fail(ws, 'NOT_HOST');
+    if (msg.gameId !== l.gameId) return fail(ws, 'GAME_MISMATCH');
+    if (l.stage !== 'playing' && l.stage !== 'ended') return fail(ws, 'NOT_LAUNCHING');
+    if (l.scored) return fail(ws, 'RESULTS_ALREADY');
+    const r = SC.readResults(msg.results);
+    if (r.error) return fail(ws, r.error);
+    const entry = SC.apply(session, l, r.rows, Date.now());
+    console.log(`[score] ${session.code} partie #${entry.n} ${entry.gameId} : ` + entry.results.map((x) => `${x.name} +${x.points}`).join(', '));
+    broadcastSession(session);
+  }
+
+  // La partie est finie : retour au Hub, prêt pour le tirage suivant. Le score
+  // de soirée arrive juste AVANT, par `results` (même socket, donc même ordre).
   function onEnded(ws, msg) {
     const m = me(ws);
     if (!m) return fail(ws, 'NOT_IN_SESSION');
@@ -614,6 +651,7 @@ function createHub(options = {}) {
     if (a === 'started') return onStarted(ws, r.msg);
     if (a === 'ended') return onEnded(ws, r.msg);
     if (a === 'abort') return onAbort(ws, r.msg);
+    if (a === 'results') return onResults(ws, r.msg);
   }
 
   function connection(ws) {

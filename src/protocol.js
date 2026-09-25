@@ -42,6 +42,10 @@ const ERRORS = {
   LAUNCH_EXPIRED: 'le lancement a expiré',
   BAD_ROOM_CODE: 'code de partie mal formé',
   WRONG_ROOM: 'ce n\'est pas la partie du groupe',
+  // Score de soirée (scores.js).
+  BAD_RESULTS: 'classement de partie invalide',
+  GAME_MISMATCH: 'ce classement ne vient pas du jeu lancé',
+  RESULTS_ALREADY: 'le classement de cette partie est déjà compté',
 };
 
 // Pourquoi un lancement échoue (launch.reason) : pas des erreurs de message,
@@ -64,7 +68,9 @@ const MAX_MESSAGE = 32 * 1024;
 // « choisis Passeur ». Un champ `gameId` ou `players` envoyé avec est ignoré.
 const ACTIONS = ['create', 'join', 'leave', 'prefs', 'caps', 'constraints', 'draw', 'continue',
   // Lancement : envoyés par la page DU JEU (games/shared/hub-handoff.js).
-  'launched', 'entered', 'started', 'ended', 'abort'];
+  'launched', 'entered', 'started', 'ended', 'abort',
+  // Score de soirée : le classement final d'une partie, par l'hôte du lancement.
+  'results'];
 
 function parse(raw) {
   if (typeof raw !== 'string') raw = String(raw);

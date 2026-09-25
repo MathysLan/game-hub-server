@@ -145,7 +145,7 @@ console.log('Lancement — module pur\n');
   L.applyLaunched(l, 'KQMP', 1100, { joinMs: 800 });
   const p = L.publicLaunch(l, 1300);
   t('public : champ par champ, waiting calculé, temps restant', same(Object.keys(p).sort(),
-    ['deadline' in p ? 'x' : 'drawId', 'entered', 'expected', 'expiresInMs', 'failed', 'gameId', 'hostId', 'missed', 'reason', 'roomCode', 'stage', 'url', 'waiting'].sort())
+    ['deadline' in p ? 'x' : 'drawId', 'entered', 'expected', 'expiresInMs', 'failed', 'gameId', 'hostId', 'missed', 'reason', 'roomCode', 'scored', 'stage', 'url', 'waiting'].sort())
     && p.expiresInMs === 600 && same(p.waiting, ['p_bbbb', 'p_cccc']));
   t('public : null sans lancement', L.publicLaunch(null, 0) === null);
 }
