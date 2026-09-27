@@ -13,6 +13,7 @@ const { readPlayer } = require('./identity.js');
 const { readPrefs, readCaps, readConstraints } = require('./prefs.js');
 const L = require('./launch.js');
 const SC = require('./scores.js');
+const F = require('./finale.js');
 const { publicSession } = require('./serialize.js');
 const { ERRORS, LAUNCH_FAILURES, parse } = require('./protocol.js');
 
@@ -38,6 +39,8 @@ const { ERRORS, LAUNCH_FAILURES, parse } = require('./protocol.js');
 // fermeture ordinaire (onClose) : joueur marqué absent, délai de grâce, reprise
 // possible avec le même player.id.
 const HEARTBEAT_MS = 20_000;
+// Une soirée terminée reste 10 min en mémoire (voir onFinish), puis disparaît.
+const FINALE_KEEP_MS = 10 * 60_000;
 
 // Hasard du tirage : cryptographique, dans [0, 1). Math.random suffirait pour
 // une soirée entre amis, mais rien ne justifie de s'en contenter.
@@ -62,6 +65,9 @@ const NO_HEALTH = {
 function createHub(options = {}) {
   const sessions = new Map();          // code → session
   const graceMs = options.graceMs == null ? S.GRACE_MS : options.graceMs;
+  // Combien de temps une soirée TERMINÉE reste en mémoire : de quoi rendre le
+  // podium à qui recharge ou revient juste après. Ensuite, SESSION_NOT_FOUND.
+  const finaleKeepMs = options.finaleKeepMs == null ? FINALE_KEEP_MS : options.finaleKeepMs;
   const heartbeatMs = options.heartbeatMs == null ? HEARTBEAT_MS : options.heartbeatMs;
   const catalog = options.catalog || NO_CATALOG;
   const health = options.health || NO_HEALTH;
@@ -208,6 +214,14 @@ function createHub(options = {}) {
     const session = sessions.get(code);
     if (!session) return fail(ws, 'SESSION_NOT_FOUND');
     if (session.state === 'closed') return fail(ws, 'SESSION_CLOSED');
+    // Soirée terminée : JAMAIS de reprise, même pour un joueur connu. Mais qui
+    // en faisait partie reçoit le podium avec le refus (rechargement de l'hôte,
+    // téléphone qui revient) — un inconnu, lui, n'apprend rien.
+    if (session.state === 'finished') {
+      const id = msg.player && typeof msg.player.id === 'string' ? msg.player.id : null;
+      const membre = id && session.finale.ranking.some((l) => l.playerId === id);
+      return fail(ws, 'SESSION_CLOSED', membre ? { finale: session.finale } : undefined);
+    }
 
     const r = readPlayer(msg.player);
     if (r.error) return send(ws, { type: 'error', code: 'BAD_PLAYER', message: r.error });
@@ -636,6 +650,55 @@ function createHub(options = {}) {
     fail(ws, 'NOT_LAUNCHING');
   }
 
+  // ── Fin de soirée ──────────────────────────────────────────────────────
+  // L'HÔTE termine la soirée pour tout le monde. Différent d'un `leave`, qui
+  // ne fait partir que soi.
+  //   - hôte seulement (`session.hostId` : la règle unique d'electHost, donc
+  //     un hôte réélu peut terminer — sinon une soirée dont l'hôte est parti ne
+  //     finirait jamais) ;
+  //   - au salon seulement (lobby, debrief) : jamais pendant un tirage, un
+  //     lancement ou une partie ;
+  //   - le podium est calculé UNE fois (finale.js), sur les scores du Hub, et
+  //     part tel quel à tous les connectés ;
+  //   - puis chaque socket est DÉTACHÉ de la session et fermé (4002) : plus
+  //     aucune action possible, plus aucune reprise. Les absents apprendront
+  //     la fin en revenant (onJoin → SESSION_CLOSED + podium) ;
+  //   - IDEMPOTENT : un second `finish` (double clic) arrive sur un socket déjà
+  //     détaché, qui reçoit simplement la même finale une seconde fois.
+  function onFinish(ws) {
+    const m = me(ws);
+    if (!m) {
+      if (ws.finale) return send(ws, { type: 'finale', finale: ws.finale });
+      return fail(ws, 'NOT_IN_SESSION');
+    }
+    const { session, player } = m;
+    if (session.hostId !== player.id) return fail(ws, 'NOT_HOST');
+    if (!S.FINISHABLE_STATES.includes(session.state)) return fail(ws, 'FINISH_NOT_ALLOWED');
+
+    session.state = 'finished';
+    session.finale = F.build(session, player.id, Date.now());
+    clearTimeout(launchTimers.get(session.code));
+    launchTimers.delete(session.code);
+    for (const key of [...graceTimers.keys()]) {
+      if (key.startsWith(session.code + '/')) { clearTimeout(graceTimers.get(key)); graceTimers.delete(key); }
+    }
+    const payload = { type: 'finale', finale: session.finale };
+    for (const [, sock] of session.sockets) {
+      sock.hub = null;               // ses fermetures ne touchent plus la session
+      sock.finale = session.finale;  // pour l'idempotence (double clic)
+      send(sock, payload);
+      try { sock.close(4002, 'finished'); } catch (_) { /* déjà fermé */ }
+    }
+    session.sockets.clear();
+    session.players.forEach((p) => { p.connected = false; });
+    console.log(`[fin] ${session.code} terminée par ${player.name} (${session.finale.ranking.length} au podium, ${session.finale.games.length} partie(s))`);
+
+    // La pierre tombale : gardée un moment pour rendre le podium, puis effacée.
+    const code = session.code;
+    const t = setTimeout(() => { if (sessions.get(code) === session) sessions.delete(code); }, finaleKeepMs);
+    if (t.unref) t.unref();
+  }
+
   function onMessage(ws, raw) {
     const r = parse(raw);
     if (r.error) {
@@ -658,6 +721,7 @@ function createHub(options = {}) {
     if (a === 'ended') return onEnded(ws, r.msg);
     if (a === 'abort') return onAbort(ws, r.msg);
     if (a === 'results') return onResults(ws, r.msg);
+    if (a === 'finish') return onFinish(ws);
   }
 
   function connection(ws) {
@@ -687,4 +751,4 @@ function createHub(options = {}) {
   };
 }
 
-module.exports = { createHub, HEARTBEAT_MS, LAUNCH_FAILURES };
+module.exports = { createHub, HEARTBEAT_MS, FINALE_KEEP_MS, LAUNCH_FAILURES };

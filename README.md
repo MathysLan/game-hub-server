@@ -87,7 +87,7 @@ reconnexion.
 
 ### États
 
-`lobby` → `drawing` → `launching` → `inGame` → `debrief` → `closed`
+`lobby` → `drawing` → `launching` → `inGame` → `debrief` → … → `finished` → (supprimée)
 
 Le randomizer en fait vivre quatre :
 
@@ -96,7 +96,8 @@ Le randomizer en fait vivre quatre :
 | `lobby` | le salon, avant le premier tirage |
 | `drawing` | un tirage est demandé (`draw.status: 'pending'`), puis révélé (`'drawn'`) |
 | `debrief` | l'hôte a confirmé (`'confirmed'`) : retour au Hub, prêt pour la suite — ou le tirage suivant |
-| `closed` | fin |
+| `finished` | **l'hôte a terminé la soirée** (`finish`) : podium figé, plus rien ne démarre, plus aucune reprise ; gardée 10 min pour rendre le podium, puis supprimée |
+| `closed` | fin (la session est supprimée dans la foulée) |
 
 `launching` et `inGame` restent réservés au handoff : **aucune transition ne
 les atteint aujourd'hui**. On entre dans une session en `lobby`, `drawing` ou
@@ -125,6 +126,7 @@ renvoie `{ type }`, en JSON sur un seul socket.
 | `started` | `drawId` | **hôte du lancement** — la partie a démarré |
 | `ended` | `drawId` | **hôte** — la partie est finie, retour au Hub |
 | `abort` | `drawId`, `reason`, `detail` | création/entrée impossible, ou annulation (hôte) |
+| `finish` | — | **hôte**, au salon (`lobby` / `debrief`) — termine la SOIRÉE pour tout le monde. ≠ `leave` |
 
 ### Serveur → client
 
@@ -133,7 +135,8 @@ renvoie `{ type }`, en JSON sur un seul socket.
 | `created` | `you` (l'id de l'appelant), `session` |
 | `joined` | `you`, `session` |
 | `session` | `session` — diffusé à tous à chaque changement |
-| `error` | `code`, `message` |
+| `error` | `code`, `message` (`SESSION_CLOSED` d'une soirée terminée porte `finale` si l'on en faisait partie) |
+| `finale` | `finale` — la soirée est terminée : le podium figé, à tous les connectés. Le socket est ensuite fermé (4002) |
 
 `session` est l'**état public** : `{ code, state, hostId, maxPlayers, players[],
 constraints, draw, history, scores, launch, pool }`. Ni socket, ni identifiant interne.
@@ -179,6 +182,7 @@ proposer la bonne suite. Le `message` humain reste au même endroit.
 | `BAD_RESULTS` | classement mal formé (rang, points, place en double, aucun premier…) |
 | `GAME_MISMATCH` | classement d'un autre jeu que celui lancé |
 | `RESULTS_ALREADY` | le classement de ce lancement est déjà compté |
+| `FINISH_NOT_ALLOWED` | `finish` pendant un tirage, un lancement ou une partie |
 
 ## Décisions, et pourquoi
 
@@ -402,6 +406,36 @@ fin de partie, page de l'hôte           → results { drawId, gameId, results: 
   classement transite par le navigateur de l'hôte. Même confiance que pour le
   code de room ; entre amis, ça suffit.
 
+## Fin de soirée (`finish`, `src/finale.js`)
+
+**Quitter ≠ terminer.** `leave` ne fait partir que soi : ses points restent
+dans `scores`, les autres continuent. `finish` termine la soirée pour TOUT le
+monde.
+
+- **Qui** : l'hôte (`session.hostId`). C'est la règle unique d'`electHost`, sans
+  exception ajoutée : si l'hôte part, son successeur peut terminer — sinon une
+  soirée dont l'hôte est parti ne finirait jamais. Pendant et juste après un
+  lancement, l'hôte du lancement garde la main (règle existante).
+- **Quand** : `lobby` ou `debrief` seulement (`FINISH_NOT_ALLOWED` sinon) —
+  jamais un groupe laissé dans une room orpheline.
+- **Quoi** : `state = 'finished'`, `finale` calculée UNE fois par
+  `finale.js` à partir de `scores` (rangs de compétition, ex æquo au même
+  rang), envoyée à tous les connectés (`{ type: 'finale', finale }`). Puis
+  chaque socket est détaché et fermé (4002), les grâces et minuteries sont
+  annulées : plus aucune action possible.
+- **`finale`** : `{ code, at, by, played, games[], ranking[] }` ; `ranking` =
+  `{ playerId, name, avatar, points, rank, present }`. Y figurent tous les
+  joueurs de la session (même à 0, même absents) ET ceux qui l'ont quittée
+  après avoir marqué (`present: false` — nom et avatar gardés à leur départ,
+  `session.departed`).
+- **Après** : un `join` reçoit `SESSION_CLOSED` — jamais de reprise — avec
+  `finale` si ce joueur figure au podium (rechargement, retour d'un absent) ;
+  un inconnu n'apprend rien. Au bout de 10 min (`FINALE_KEEP_MS`), la session
+  est supprimée : `SESSION_NOT_FOUND`.
+- **Idempotent** : un second `finish` arrivé sur un socket déjà détaché reçoit
+  la même finale ; la clôture n'a lieu qu'une fois.
+- ⚠️ `/health` compte les soirées terminées encore en mémoire dans `sessions`.
+
 ## HTTP
 
 ```
@@ -451,6 +485,8 @@ node test-launch.js    # 43 — le lancement, module pur
 node test-handoff.js   # 42 — le lancement sur vraies connexions : rôles, codes,
                        #      concurrence, délais, échecs, changement d'hôte
 node test-scores.js    # 53 — score de soirée : module pur, puis `results` sur vraies connexions
+node test-finale.js    # 34 — fin de soirée : podium (ex æquo, partis), hôte seul, états refusés,
+                       #      double finish, reprise impossible, hôte déconnecté, pierre tombale
 node test-debrief.js   # 31 — retour de partie : session vide gardée pendant la grâce
                        #      (solo, groupe), puis supprimée ; cas inchangés
 node test-e2e.js       # 26 — le vrai serveur, HTTP et tirage compris

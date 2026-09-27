@@ -12,7 +12,7 @@
 // à partir des classements que les jeux lui rendent (voir scores.js).
 'use strict';
 
-// Les six états :
+// Les sept états :
 //   lobby      le salon (et le retour au salon après un lancement raté) ;
 //   drawing    un tirage est demandé puis révélé (draw.status pending → drawn) ;
 //   launching  le jeu tiré se lance : l'hôte crée la room, les invités la
@@ -20,8 +20,15 @@
 //   inGame     la partie est lancée ;
 //   debrief    retour au Hub : jeu tiré non lançable, ou partie terminée —
 //              prêt pour le tirage suivant ;
-//   closed     fin.
-const STATES = ['lobby', 'drawing', 'launching', 'inGame', 'debrief', 'closed'];
+//   finished   la SOIRÉE est terminée par l'hôte (action `finish`) : podium
+//              figé (`finale`), plus aucun tirage ni lancement, plus aucune
+//              reprise. La session reste en mémoire un moment, pour rendre le
+//              podium à qui revient (voir hub.js → onFinish), puis disparaît ;
+//   closed     fin (la session est supprimée dans la foulée).
+const STATES = ['lobby', 'drawing', 'launching', 'inGame', 'debrief', 'finished', 'closed'];
+// Où l'hôte peut terminer la soirée : au salon, jamais pendant un tirage, un
+// lancement ou une partie (le groupe serait laissé dans une room orpheline).
+const FINISHABLE_STATES = ['lobby', 'debrief'];
 
 // On entre dans une session tant qu'elle vit : un ami qui arrive en retard
 // rejoint le Hub même pendant un lancement ou une partie (il pourra entrer
@@ -81,6 +88,12 @@ function createSession(code, options = {}) {
     // tout le monde), ne fait que grandir, meurt avec la session. Seul
     // scores.apply() l'écrit — jamais un message de client directement.
     scores: {},
+    // Qui a QUITTÉ la session (leave, ou fin de grâce) : son nom et son avatar,
+    // pour que le podium final le montre encore — ses points, eux, restent
+    // dans `scores`. Interne : jamais sérialisé tel quel.
+    departed: {},
+    // Le podium final, posé une fois par onFinish (voir finale.js). null avant.
+    finale: null,
     // Réglée par l'hôte : plafond de durée comparé au minutes.max du manifest.
     constraints: { maxMinutes: null },
     // Le lancement du jeu tiré (launch.js), ou null.
@@ -129,6 +142,7 @@ function removePlayer(s, id) {
   const i = s.players.findIndex((p) => p.id === id);
   if (i < 0) return null;
   const [p] = s.players.splice(i, 1);
+  s.departed[p.id] = { name: p.name, avatar: p.avatar };
   if (s.hostId === id) electHost(s);
   return p;
 }
@@ -164,6 +178,6 @@ function electHost(s) {
 }
 
 module.exports = {
-  STATES, OPEN_STATES, HANDOFF_STATES, MAX_PLAYERS, GRACE_MS, backFromGame,
+  STATES, OPEN_STATES, HANDOFF_STATES, FINISHABLE_STATES, MAX_PLAYERS, GRACE_MS, backFromGame,
   createSession, addPlayer, removePlayer, getPlayer, connectedPlayers, electHost,
 };

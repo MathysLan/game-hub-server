@@ -87,8 +87,8 @@ console.log('Modèle de session — hors réseau\n');
   const s = S.createSession('AB2CD');
   t('session neuve : état lobby', s.state === 'lobby');
   t('session neuve : aucun hôte tant qu\'il n\'y a personne', s.hostId === null);
-  t('les six états sont représentables',
-    S.STATES.join(',') === 'lobby,drawing,launching,inGame,debrief,closed');
+  t('les sept états sont représentables (dont finished : la soirée terminée par l\'hôte)',
+    S.STATES.join(',') === 'lobby,drawing,launching,inGame,debrief,finished,closed');
 
   const a = S.addPlayer(s, { id: 'p_aaaa', name: 'A', avatar: { kind: 'emoji', emoji: '🦊' } });
   t('le premier joueur devient hôte', s.hostId === 'p_aaaa');

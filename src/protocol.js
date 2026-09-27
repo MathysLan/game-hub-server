@@ -46,6 +46,8 @@ const ERRORS = {
   BAD_RESULTS: 'classement de partie invalide',
   GAME_MISMATCH: 'ce classement ne vient pas du jeu lancé',
   RESULTS_ALREADY: 'le classement de cette partie est déjà compté',
+  // Fin de soirée (hub.js → onFinish).
+  FINISH_NOT_ALLOWED: 'on ne peut pas terminer la soirée pendant un tirage ou une partie',
 };
 
 // Pourquoi un lancement échoue (launch.reason) : pas des erreurs de message,
@@ -70,7 +72,9 @@ const ACTIONS = ['create', 'join', 'leave', 'prefs', 'caps', 'constraints', 'dra
   // Lancement : envoyés par la page DU JEU (games/shared/hub-handoff.js).
   'launched', 'entered', 'started', 'ended', 'abort',
   // Score de soirée : le classement final d'une partie, par l'hôte du lancement.
-  'results'];
+  'results',
+  // Fin de soirée : l'hôte termine la session pour TOUT le monde. Ne porte rien.
+  'finish'];
 
 function parse(raw) {
   if (typeof raw !== 'string') raw = String(raw);
