@@ -208,12 +208,22 @@ avant le handoff.
 |---|---|
 | **coupure réseau** (socket fermé, ou coupé par le heartbeat) | joueur **absent**, gardé **60 s** ; il reprend sa place en rejouant `join` avec le même `player.id` |
 | **`leave`** (départ volontaire) | joueur **retiré tout de suite**, sans délai de grâce |
-| plus **aucun joueur connecté** après l'un ou l'autre | session **supprimée immédiatement**, absents compris |
+| plus **aucun joueur connecté** après l'un ou l'autre | session **supprimée immédiatement**, absents compris — sauf les exceptions ci-dessous |
 
 La dernière ligne vaut pour les deux chemins : un salon où il ne reste que des
 absents n'a plus de participant volontairement présent. Jusqu'au 2026-09-19,
 un `leave` n'appliquait pas cette règle et la session survivait 60 s pour un
 absent.
+
+**Exceptions, sur une coupure seulement (jamais sur `leave`)** : une session
+vide n'est pas fermée pendant `launching` / `inGame` (le groupe navigue vers
+le jeu), ni au **debrief d'une partie terminée** (`debrief` + `launch.stage ===
+'ended'` : le groupe revient du jeu au Hub, même onglet). Les délais de grâce
+individuels font le ménage : le dernier absent retiré ferme la session. Avant
+le 2026-09-27, le debrief n'était pas couvert : seul, revenir d'une partie
+donnait « Ta session précédente n'existe plus » et le score de soirée était
+perdu. Un `debrief` sans partie terminée (jeu tiré mais pas lançable) ferme
+comme avant.
 
 ### Heartbeat : un ping toutes les 20 s
 
@@ -356,7 +366,8 @@ fin de partie                 → ended            état debrief, prêt à retir
   de naviguer vers le jeu, dans le même onglet. Il ne le perd qu'en partant
   vraiment (leave, ou fin de sa grâce). Même règle au retour de partie.
 - **Une session sans personne de connecté n'est PAS fermée** pendant
-  `launching` / `inGame` : tout le groupe navigue en même temps.
+  `launching` / `inGame`, ni au `debrief` d'un lancement `ended` : tout le
+  groupe navigue en même temps, à l'aller comme au retour.
 
 ## Score de soirée (`src/scores.js`, module pur)
 
@@ -440,6 +451,8 @@ node test-launch.js    # 43 — le lancement, module pur
 node test-handoff.js   # 42 — le lancement sur vraies connexions : rôles, codes,
                        #      concurrence, délais, échecs, changement d'hôte
 node test-scores.js    # 53 — score de soirée : module pur, puis `results` sur vraies connexions
+node test-debrief.js   # 31 — retour de partie : session vide gardée pendant la grâce
+                       #      (solo, groupe), puis supprimée ; cas inchangés
 node test-e2e.js       # 26 — le vrai serveur, HTTP et tirage compris
 ```
 

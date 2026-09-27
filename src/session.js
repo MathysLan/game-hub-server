@@ -34,6 +34,14 @@ const OPEN_STATES = ['lobby', 'drawing', 'launching', 'inGame', 'debrief'];
 // délais de grâce individuels s'en chargent.
 const HANDOFF_STATES = ['launching', 'inGame'];
 
+// Le RETOUR d'une partie finie : debrief d'un lancement arrivé à 'ended'. Le
+// groupe revient du jeu au Hub dans le même onglet, donc passe lui aussi par
+// un instant sans aucun joueur connecté (seul, c'est systématique). Un debrief
+// sans partie terminée (lancement annulé, échoué) n'en fait PAS partie.
+function backFromGame(s) {
+  return s.state === 'debrief' && !!s.launch && s.launch.stage === 'ended';
+}
+
 // 12 et pas 8 : c'est le MAX_PLAYERS de precision-server, le plus permissif des
 // sept (relevé dans src/server.js). Plafonner le Hub à 8 interdirait une
 // session de dix amis qui veulent jouer à Precision. Le filtre par jeu viendra
@@ -137,7 +145,7 @@ function electHost(s) {
   // chacun revient du jeu au Hub dans le même onglet, donc passe par un instant
   // « absent ». Contrepartie : un hôte qui ne revient jamais garde la main
   // jusqu'à la fin de sa grâce (60 s), puis elle passe au suivant.
-  const cycle = HANDOFF_STATES.includes(s.state) || (s.state === 'debrief' && s.launch && s.launch.stage === 'ended');
+  const cycle = HANDOFF_STATES.includes(s.state) || backFromGame(s);
   if (cycle && s.launch && getPlayer(s, s.launch.hostId)) {
     s.hostId = s.launch.hostId;
     return s.hostId;
@@ -156,6 +164,6 @@ function electHost(s) {
 }
 
 module.exports = {
-  STATES, OPEN_STATES, HANDOFF_STATES, MAX_PLAYERS, GRACE_MS,
+  STATES, OPEN_STATES, HANDOFF_STATES, MAX_PLAYERS, GRACE_MS, backFromGame,
   createSession, addPlayer, removePlayer, getPlayer, connectedPlayers, electHost,
 };

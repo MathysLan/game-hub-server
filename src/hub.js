@@ -279,7 +279,13 @@ function createHub(options = {}) {
     // déconnecté du Hub une seconde : chacun navigue vers le jeu, dans le même
     // onglet. On ne ferme donc PAS la session vide ; les délais de grâce
     // individuels (plus bas) s'en chargeront si personne ne revient.
-    if (!S.connectedPlayers(session).length && !S.HANDOFF_STATES.includes(session.state)) return closeSession(session);
+    // Même chose au RETOUR d'une partie finie (debrief d'un lancement 'ended') :
+    // quitter la page du jeu ferme le socket du Hub avant que /games/ ne se
+    // reconnecte. Sans ça, un joueur seul perdait sa session — et son score de
+    // soirée — à chaque partie. Il faut une grâce (> 0) pour que quelqu'un
+    // finisse par la fermer : sans grâce, on ferme comme avant.
+    const garder = S.HANDOFF_STATES.includes(session.state) || (S.backFromGame(session) && session.graceMs > 0);
+    if (!S.connectedPlayers(session).length && !garder) return closeSession(session);
 
     S.electHost(session);
     broadcastSession(session);
