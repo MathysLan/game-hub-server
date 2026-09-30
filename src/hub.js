@@ -14,6 +14,7 @@ const { readPrefs, readCaps, readConstraints } = require('./prefs.js');
 const L = require('./launch.js');
 const SC = require('./scores.js');
 const F = require('./finale.js');
+const ST = require('./stats.js');
 const { publicSession } = require('./serialize.js');
 const { ERRORS, LAUNCH_FAILURES, parse } = require('./protocol.js');
 
@@ -76,6 +77,61 @@ function createHub(options = {}) {
   const graceTimers = new Map();       // `code/playerId` → timer
   const launchTimers = new Map();      // code de session → échéance du lancement en cours
   const connections = new Set();       // tous les sockets vivants, en session ou non
+
+  // ── Statistiques de joueur (stats.js) ──────────────────────────────────
+  // `statsStore` : store-pg.js (production, DATABASE_URL) ou store-memory.js
+  // (tests, HUB_STATS=memory). Absent → aucune statistique, et la soirée
+  // marche EXACTEMENT comme avant : rien n'attend jamais la base.
+  const store = options.statsStore || null;
+  const reessais = options.statsRetryMs || [2_000, 8_000];
+  // Par session : les joueurs dont la CLÉ a été vérifiée → son empreinte.
+  // Interne (WeakMap, hors du modèle) : ne part jamais sur le fil.
+  const verifs = new WeakMap();
+  const verifies = (session) => { let v = verifs.get(session); if (!v) verifs.set(session, (v = new Map())); return v; };
+
+  // À chaque create / join (reprise comprise) : la clé du profil décide si CE
+  // socket lit et écrit les stats de cet id. Même empreinte que la dernière
+  // vérifiée dans la session → rien à redemander (une reconnexion juste avant
+  // un classement ne fait perdre aucune ligne). Sinon : on oublie, puis on
+  // vérifie auprès du stockage — et on ne retient la réponse que si ce socket
+  // est TOUJOURS celui du joueur.
+  function verifieCle(ws, session, playerId, raw) {
+    if (!store) return;
+    const v = verifies(session);
+    const key = ST.readKey(raw);
+    if (!key) { v.delete(playerId); return; }
+    const h = ST.hashKey(key);
+    if (v.get(playerId) === h) return;
+    v.delete(playerId);
+    store.register(playerId, h).then((r) => {
+      if (session.sockets.get(playerId) !== ws) return;
+      if (r === 'mismatch') {
+        if (!process.env.HUB_QUIET) console.warn(`[stats] ${session.code} : clé refusée pour ${playerId} (joue sans statistiques)`);
+        return;
+      }
+      v.set(playerId, h);
+    }, (e) => { if (!process.env.HUB_QUIET) console.warn('[stats] vérification impossible :', e.message); });
+  }
+
+  // Après un classement ACCEPTÉ (onResults) : une ligne par joueur vérifié,
+  // présent ou parti. Asynchrone et jamais attendu. Base injoignable → deux
+  // nouvelles tentatives, puis on abandonne (et on le dit dans les logs) : la
+  // clé primaire rend chaque essai sans risque de doublon.
+  function enregistreStats(session, launch, rows) {
+    if (!store) return;
+    const v = verifies(session);
+    const list = ST.playsFor(rows, launch.seats, (id) => v.has(id));
+    if (!list.length) return;
+    const tente = (i) => store.record(launch.drawId, session.code, launch.gameId, list).then((n) => {
+      if (!process.env.HUB_QUIET) console.log(`[stats] ${session.code} ${launch.gameId} : ${n} ligne(s)`);
+    }, (e) => {
+      if (i < reessais.length) {
+        const t = setTimeout(() => tente(i + 1), reessais[i]);
+        if (t.unref) t.unref();
+      } else if (!process.env.HUB_QUIET) console.warn(`[stats] ${session.code} ${launch.drawId} non enregistrée :`, e.message);
+    });
+    tente(0);
+  }
 
   // Un tour de heartbeat : couper ce qui n'a pas répondu depuis le tour
   // précédent, puis relancer un ping à tous les autres.
@@ -202,8 +258,11 @@ function createHub(options = {}) {
     sessions.set(code, session);
     S.addPlayer(session, r.player);
     attach(ws, session, r.player);
+    verifieCle(ws, session, r.player.id, msg.player.key);
 
-    send(ws, { type: 'created', you: r.player.id, session: publicOf(session) });
+    // `stats` : ce Hub sait-il répondre à `{ action: 'stats' }` ? Un client
+    // ne le demande qu'à un Hub qui l'annonce (un Hub d'avant ne l'annonce pas).
+    send(ws, { type: 'created', you: r.player.id, stats: !!store, session: publicOf(session) });
     chargeCatalogue();
   }
 
@@ -236,15 +295,17 @@ function createHub(options = {}) {
       connu.avatar = r.player.avatar;
       connu.connected = true;
       attach(ws, session, connu);
+      verifieCle(ws, session, connu.id, msg.player.key);
       S.electHost(session);
-      send(ws, { type: 'joined', you: connu.id, session: publicOf(session) });
+      send(ws, { type: 'joined', you: connu.id, stats: !!store, session: publicOf(session) });
       return broadcastSession(session);
     }
 
     const add = S.addPlayer(session, r.player);
     if (add.error) return fail(ws, add.error);
     attach(ws, session, add.player);
-    send(ws, { type: 'joined', you: add.player.id, session: publicOf(session) });
+    verifieCle(ws, session, add.player.id, msg.player.key);
+    send(ws, { type: 'joined', you: add.player.id, stats: !!store, session: publicOf(session) });
     broadcastSession(session);
   }
 
@@ -600,6 +661,7 @@ function createHub(options = {}) {
     const r = SC.readResults(msg.results);
     if (r.error) return fail(ws, r.error);
     const entry = SC.apply(session, l, r.rows, Date.now());
+    enregistreStats(session, l, r.rows);   // stats de joueur : à côté, jamais attendues
     console.log(`[score] ${session.code} partie #${entry.n} ${entry.gameId} : ` + entry.results.map((x) => `${x.name} +${x.points}`).join(', '));
     broadcastSession(session);
   }
@@ -699,6 +761,25 @@ function createHub(options = {}) {
     if (t.unref) t.unref();
   }
 
+  // Tes statistiques, et seulement les tiennes : le joueur est désigné par son
+  // socket (me), jamais par le message, qui ne porte rien. Réponse :
+  //   { type: 'stats', stats: { played, solo, wins, podiums, best, games } }
+  //   { type: 'stats', stats: null, reason: 'UNAVAILABLE' | 'UNVERIFIED' }
+  // UNAVAILABLE = pas de stockage, ou base injoignable ; UNVERIFIED = pas de
+  // clé, ou une clé qui n'est pas celle enregistrée pour cet id. Une demande à
+  // la fois par socket (un client bavard ne fait pas tourner la base).
+  function onStats(ws) {
+    const m = me(ws);
+    if (!m) return fail(ws, 'NOT_IN_SESSION');
+    const nulle = (reason) => send(ws, { type: 'stats', stats: null, reason });
+    if (!store) return nulle('UNAVAILABLE');
+    if (!verifies(m.session).has(m.player.id)) return nulle('UNVERIFIED');
+    if (ws.statsEnCours) return;
+    ws.statsEnCours = true;
+    store.perGame(m.player.id).then((games) => send(ws, { type: 'stats', stats: ST.summarize(games) }), () => nulle('UNAVAILABLE'))
+      .then(() => { ws.statsEnCours = false; });
+  }
+
   function onMessage(ws, raw) {
     const r = parse(raw);
     if (r.error) {
@@ -722,6 +803,7 @@ function createHub(options = {}) {
     if (a === 'abort') return onAbort(ws, r.msg);
     if (a === 'results') return onResults(ws, r.msg);
     if (a === 'finish') return onFinish(ws);
+    if (a === 'stats') return onStats(ws);
   }
 
   function connection(ws) {

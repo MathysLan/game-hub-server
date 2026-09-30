@@ -17,6 +17,8 @@
 //   PORT            8100 par défaut
 //   MANIFEST_URL    le catalogue des jeux (défaut : GitHub Pages du portfolio)
 //   MANIFEST_FILE   un fichier local à la place (tests, développement)
+//   DATABASE_URL    Postgres des statistiques de joueur (Neon) ; absent = pas de stats
+//   HUB_STATS       'memory' : statistiques en mémoire (tests), sans DATABASE_URL
 //
 // Ce fichier n'assemble que les morceaux ; la logique est dans src/.
 'use strict';
@@ -36,7 +38,13 @@ const PORT = process.env.PORT || 8100;
 let hub = null;
 const catalog = createCatalog({ url: process.env.MANIFEST_URL, file: process.env.MANIFEST_FILE });
 const health = createHealth({ onChange: () => { if (hub) hub.broadcastAll(); } });
-hub = createHub({ catalog, health });
+// Statistiques de joueur : Postgres si DATABASE_URL (production, Neon), la
+// mémoire si HUB_STATS=memory (tests du portfolio), rien sinon — et alors la
+// soirée marche comme avant, sans statistiques.
+const statsStore = process.env.DATABASE_URL ? require('./store-pg.js').createPgStore({ url: process.env.DATABASE_URL })
+  : process.env.HUB_STATS === 'memory' ? require('./store-memory.js').createMemoryStore() : null;
+if (!process.env.HUB_QUIET) console.log('[stats] stockage :', statsStore ? statsStore.kind : 'aucun (statistiques désactivées)');
+hub = createHub({ catalog, health, statsStore });
 catalog.load().catch((e) => { if (!process.env.HUB_QUIET) console.warn('[catalogue] indisponible au démarrage :', e.message); });
 const server = createHttp(hub, pkg);
 const wss = new WebSocketServer({ server });

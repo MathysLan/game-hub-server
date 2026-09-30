@@ -26,7 +26,8 @@ Volontairement absents :
 |---|---|
 | score de soirée pour les SIX autres jeux (seul Le Passeur rend son classement) | phases suivantes |
 | historique de CONTENU (`usedContent`), rejouer | phases tardives |
-| compte, authentification, base de données | jamais |
+| compte, authentification | jamais |
+| base de données pour autre chose que les **statistiques de joueur** (facultative, voir plus bas) | jamais |
 | matchmaking public | jamais — c'est un Hub entre amis |
 
 Aucun des sept serveurs de jeu n'a été modifié, et aucun ne l'est par ce dépôt.
@@ -41,7 +42,10 @@ npm test             # modèle, puis protocole, puis bout en bout
 
 Variables d'environnement : `PORT` (8100), `MANIFEST_URL` (défaut : le
 manifest publié par GitHub Pages, `https://mathyslan.github.io/data/games.manifest.json`),
-`MANIFEST_FILE` (un fichier local à la place — tests, développement hors ligne).
+`MANIFEST_FILE` (un fichier local à la place — tests, développement hors ligne),
+`DATABASE_URL` (Postgres des statistiques de joueur ; absente = pas de
+statistiques, tout le reste inchangé), `HUB_STATS=memory` (statistiques en
+mémoire, pour les tests du portfolio, si pas de `DATABASE_URL`).
 
 ## Modèle
 
@@ -127,13 +131,15 @@ renvoie `{ type }`, en JSON sur un seul socket.
 | `ended` | `drawId` | **hôte** — la partie est finie, retour au Hub |
 | `abort` | `drawId`, `reason`, `detail` | création/entrée impossible, ou annulation (hôte) |
 | `finish` | — | **hôte**, au salon (`lobby` / `debrief`) — termine la SOIRÉE pour tout le monde. ≠ `leave` |
+| `stats` | — | SES statistiques de joueur (désigné par son socket). Voir « Statistiques de joueur » |
 
 ### Serveur → client
 
 | `type` | Charge |
 |---|---|
-| `created` | `you` (l'id de l'appelant), `session` |
-| `joined` | `you`, `session` |
+| `created` | `you` (l'id de l'appelant), `stats` (ce Hub sait-il répondre à `stats` ?), `session` |
+| `joined` | `you`, `stats`, `session` |
+| `stats` | `stats` : `{ played, solo, wins, podiums, best, games[] }`, ou `null` + `reason` (`UNAVAILABLE` / `UNVERIFIED`) |
 | `session` | `session` — diffusé à tous à chaque changement |
 | `error` | `code`, `message` (`SESSION_CLOSED` d'une soirée terminée porte `finale` si l'on en faisait partie) |
 | `finale` | `finale` — la soirée est terminée : le podium figé, à tous les connectés. Le socket est ensuite fermé (4002) |
@@ -436,6 +442,39 @@ monde.
   la même finale ; la clôture n'a lieu qu'une fois.
 - ⚠️ `/health` compte les soirées terminées encore en mémoire dans `sessions`.
 
+## Statistiques de joueur (`src/stats.js`, lot H)
+
+D'une soirée à l'autre : parties, victoires, podiums, meilleure place, par jeu.
+
+- **Source de vérité : ce Hub.** Une ligne n'existe que parce que le Hub a
+  ACCEPTÉ un classement (`results` → `onResults`, après `scores.apply`, qui
+  ne change pas). Un client ne déclare rien ; il demande SES agrégats.
+- **Stockage** : Postgres (`DATABASE_URL`, Neon en production), deux tables
+  `hub_players` (id + empreinte sha256 de la clé) et `hub_plays` (une ligne par
+  tirage et par joueur : rang du jeu, nombre de classés, combien derrière,
+  points de soirée). Schéma créé au démarrage (`create table if not exists`).
+  Agrégats calculés PAR LA BASE (`group by` jeu) : jamais d'historique
+  téléchargé. `store-memory.js` a la même interface (tests).
+- **Identité** : le player.id du profil, qui N'EST PAS secret (il est dans
+  l'état public) — accompagné d'une **clé** (`player.key`, 32 à 64 caractères)
+  qui ne sort que du navigateur du joueur. Premier passage d'un id :
+  l'empreinte est enregistrée ; ensuite, autre clé = ni écriture ni lecture
+  pour ce socket (la partie se joue quand même). Sans clé (ancien client) :
+  pas de statistiques. La clé ne part jamais dans l'état public.
+- **Définitions** : partie = partie classée où le joueur a une place (solo
+  compris) ; victoire = rang 1 ET au moins un classé derrière (ni un solo, ni
+  un nul du Morpion 1 / 1) ; podium = rang ≤ 3 à 2 classés ou plus ; meilleure
+  place = plus petit rang à 2 classés ou plus. Le rang est celui du jeu, tel
+  quel : ex æquo 1, 1, 3 → deux victoires, un 3e au podium.
+- **Joueur parti** : sa ligne est enregistrée (il a joué, sa place le prouve) ;
+  le score de SOIRÉE, lui, reste réservé aux présents.
+- **Doublons** : `RESULTS_ALREADY` (une fois par lancement), puis la clé
+  primaire `(draw_id, player_id)` + `on conflict do nothing` — même un renvoi
+  après un redémarrage du Hub ne recompte rien.
+- **Panne** : l'écriture est asynchrone, jamais attendue ; base injoignable →
+  deux nouvelles tentatives, puis abandon (log). `stats` répond alors
+  `UNAVAILABLE`, jamais un faux zéro. La soirée ne dépend jamais de la base.
+
 ## HTTP
 
 ```
@@ -459,6 +498,8 @@ plus parler à un serveur ancien — pas à chaque correctif.
 | `src/engine.js` | **le moteur de tirage** : filtre, poids, tirage — pur | non |
 | `src/launch.js` | **le lancement** : états, validations, attente — pur | non |
 | `src/scores.js` | **le score de soirée** : places, validation, conversion — pur | non |
+| `src/stats.js` | **les statistiques de joueur** : définitions, clé, lignes à enregistrer — pur | non |
+| `src/store-pg.js` / `src/store-memory.js` | stockage des statistiques (Postgres / mémoire), même interface | Postgres / non |
 | `src/prefs.js` | validation de prefs, caps, contrainte | non |
 | `src/catalog.js` | lecture et validation du manifest | HTTP (GET) |
 | `src/health.js` | santé des serveurs de jeu | HTTP (GET) |
@@ -489,6 +530,9 @@ node test-finale.js    # 34 — fin de soirée : podium (ex æquo, partis), hôt
                        #      double finish, reprise impossible, hôte déconnecté, pierre tombale
 node test-debrief.js   # 31 — retour de partie : session vide gardée pendant la grâce
                        #      (solo, groupe), puis supprimée ; cas inchangés
+node test-stats.js     # 50 — statistiques de joueur : définitions, stockage, protocole (clé, doublons,
+                       #      parti, reconnexion, panne, solo, 9 joueurs) ; + 5 en SQL avec
+                       #      TEST_DATABASE_URL (base de TEST, ses tables hub_* sont vidées)
 node test-e2e.js       # 26 — le vrai serveur, HTTP et tirage compris
 ```
 

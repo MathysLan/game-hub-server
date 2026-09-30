@@ -74,7 +74,9 @@ const ACTIONS = ['create', 'join', 'leave', 'prefs', 'caps', 'constraints', 'dra
   // Score de soirée : le classement final d'une partie, par l'hôte du lancement.
   'results',
   // Fin de soirée : l'hôte termine la session pour TOUT le monde. Ne porte rien.
-  'finish'];
+  'finish',
+  // Statistiques de joueur : SES agrégats, désigné par son socket. Ne porte rien.
+  'stats'];
 
 function parse(raw) {
   if (typeof raw !== 'string') raw = String(raw);
