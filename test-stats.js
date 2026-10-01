@@ -236,7 +236,8 @@ async function protocole() {
   t('joined : annoncé aussi aux invités (et à un client sans clé)', b.accueil.stats === true && x.accueil.type === 'joined' && x.accueil.stats === true);
   t('la clé ne part JAMAIS dans l\'état public de la session', !JSON.stringify(a.last()).includes(cle('b')) && !JSON.stringify(a.msgs).includes('kbkbkb'));
   const s0 = await a.stats();
-  t('A. nouveau joueur : aucune partie, un résumé vide, aucun record', same(S(s0), { played: 0, solo: 0, wins: 0, podiums: 0, best: null, games: [], records: null }), JSON.stringify(s0));
+  // (les succès, lot J, sont éprouvés par test-achievements.js)
+  t('A. nouveau joueur : aucune partie, un résumé vide, aucun record', same({ ...S(s0), achievements: undefined }, { played: 0, solo: 0, wins: 0, podiums: 0, best: null, games: [], records: null }), JSON.stringify(s0));
   t('sans clé : UNVERIFIED (la soirée continue, sans statistiques)', (await x.stats()).reason === 'UNVERIFIED');
 
   // B–F. Une partie à cinq : 1 Ana, 2 Bob, 3 Cam, 4 Dan, 5 Xav.
@@ -370,13 +371,13 @@ async function protocole() {
     const pg = createPgStore({ url: process.env.TEST_DATABASE_URL });
     const { Pool } = require('pg');
     const brut = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
-    await brut.query('drop table if exists hub_plays; drop table if exists hub_players;');
+    await brut.query('drop table if exists hub_achievements; drop table if exists hub_plays; drop table if exists hub_players;');
     const sql = await scenarioStore(pg, 'postgres');
     t('postgres : les agrégats SQL = ceux de stats.js (mémoire), champ par champ', same(sql, mem), JSON.stringify(sql));
     t('postgres : les MÊMES records qu\'en mémoire', same(ST.summarize(sql).records, ST.summarize(mem).records), JSON.stringify(ST.summarize(sql).records));
     const vide = await pg.perGame('p_personne');
     t('postgres : un id sans partie → aucune ligne', same(vide, []));
-    await brut.query('drop table if exists hub_plays; drop table if exists hub_players;');
+    await brut.query('drop table if exists hub_achievements; drop table if exists hub_plays; drop table if exists hub_players;');
     await brut.end(); await pg.close();
   } else {
     console.log('(postgres sauté : TEST_DATABASE_URL absent)');

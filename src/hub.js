@@ -15,6 +15,7 @@ const L = require('./launch.js');
 const SC = require('./scores.js');
 const F = require('./finale.js');
 const ST = require('./stats.js');
+const AC = require('./achievements.js');
 const { publicSession } = require('./serialize.js');
 const { ERRORS, LAUNCH_FAILURES, parse } = require('./protocol.js');
 
@@ -101,7 +102,7 @@ function createHub(options = {}) {
     const key = ST.readKey(raw);
     if (!key) { v.delete(playerId); return; }
     const h = ST.hashKey(key);
-    if (v.get(playerId) === h) return;
+    if (v.get(playerId) === h) { auRetour(ws, playerId); return; }
     v.delete(playerId);
     store.register(playerId, h).then((r) => {
       if (session.sockets.get(playerId) !== ws) return;
@@ -110,7 +111,45 @@ function createHub(options = {}) {
         return;
       }
       v.set(playerId, h);
+      auRetour(ws, playerId);
     }, (e) => { if (!process.env.HUB_QUIET) console.warn('[stats] vérification impossible :', e.message); });
+  }
+
+  // ── Succès de joueur (achievements.js, lot J) ───────────────────────────
+  // Le Hub SEUL décide : rejeu des parties du joueur → succès vrais → insertion
+  // `on conflict do nothing` qui rend les NOUVEAUX (premier déblocage, une
+  // seule fois même si deux chemins se croisent). Jamais à partir d'un message
+  // client. Rend la liste des codes nouvellement débloqués.
+  function debloque(playerId) {
+    return store.plays(playerId).then((plays) => {
+      const list = AC.unlocks(plays);
+      return list.length ? store.unlock(playerId, list) : [];
+    });
+  }
+  // Les sockets VÉRIFIÉS de ce joueur (la page /games/ comme celle d'un jeu,
+  // qui ignore le message : seule /games/ affiche et accuse réception).
+  const socketsDe = (playerId) => [...connections].filter((ws) => {
+    const m = me(ws);
+    return m && m.player.id === playerId && verifies(m.session).has(playerId);
+  });
+  // Envoie les succès débloqués PAS ENCORE NOTIFIÉS. Ils le restent jusqu'à
+  // l'accusé `achievements-seen` : un départ, un rechargement, un onglet fermé
+  // avant l'affichage → renvoyés à la prochaine connexion, jamais après.
+  //   { type: 'achievement', unlocked: [{ code, at, drawId }] }
+  function livre(playerId, vers) {
+    return store.achievements(playerId).then((rows) => {
+      const attente = rows.filter((r) => r.notifiedAt == null)
+        .sort((a, b) => AC.CODES.indexOf(a.code) - AC.CODES.indexOf(b.code))
+        .map((r) => ({ code: r.code, at: r.unlockedAt, drawId: r.drawId }));
+      if (!attente.length) return;
+      for (const ws of vers || socketsDe(playerId)) send(ws, { type: 'achievement', unlocked: attente });
+    });
+  }
+  const noteSucces = (e) => { if (!process.env.HUB_QUIET) console.warn('[succès]', e.message); };
+  // À chaque entrée vérifiée (create / join / reprise) : rattrape un déblocage
+  // manqué (base en panne au moment du classement), puis livre ce qui attend.
+  function auRetour(ws, playerId) {
+    debloque(playerId).then(() => { if (ws.readyState === 1) return livre(playerId, [ws]); }).catch(noteSucces);
   }
 
   // Après un classement ACCEPTÉ (onResults) : une ligne par joueur vérifié,
@@ -124,6 +163,16 @@ function createHub(options = {}) {
     if (!list.length) return;
     const tente = (i) => store.record(launch.drawId, session.code, launch.gameId, list).then((n) => {
       if (!process.env.HUB_QUIET) console.log(`[stats] ${session.code} ${launch.gameId} : ${n} ligne(s)`);
+      // Succès : juste après les lignes, pour chaque joueur classé. Un nouveau
+      // déblocage part tout de suite à ses sockets (souvent la page du jeu, qui
+      // l'ignore : /games/ le recevra au retour, voir auRetour).
+      for (const p of list) {
+        debloque(p.playerId).then((neufs) => {
+          if (!neufs.length) return;
+          if (!process.env.HUB_QUIET) console.log(`[succès] ${session.code} ${p.playerId} : ${neufs.join(', ')}`);
+          return livre(p.playerId);
+        }).catch(noteSucces);
+      }
     }, (e) => {
       if (i < reessais.length) {
         const t = setTimeout(() => tente(i + 1), reessais[i]);
@@ -763,8 +812,9 @@ function createHub(options = {}) {
 
   // Tes statistiques, et seulement les tiennes : le joueur est désigné par son
   // socket (me), jamais par le message, qui ne porte rien. Réponse :
-  //   { type: 'stats', stats: { played, solo, wins, podiums, best, games, records } }
-  // (`records` : stats.js → records(), dérivés du même résumé, lot I)
+  //   { type: 'stats', stats: { played, solo, wins, podiums, best, games, records, achievements } }
+  // (`records` : stats.js → records(), dérivés du même résumé, lot I ;
+  //  `achievements` : les 10 succès, obtenus ou non, achievements.js → view(), lot J)
   //   { type: 'stats', stats: null, reason: 'UNAVAILABLE' | 'UNVERIFIED' }
   // UNAVAILABLE = pas de stockage, ou base injoignable ; UNVERIFIED = pas de
   // clé, ou une clé qui n'est pas celle enregistrée pour cet id. Une demande à
@@ -777,8 +827,26 @@ function createHub(options = {}) {
     if (!verifies(m.session).has(m.player.id)) return nulle('UNVERIFIED');
     if (ws.statsEnCours) return;
     ws.statsEnCours = true;
-    store.perGame(m.player.id).then((games) => send(ws, { type: 'stats', stats: ST.summarize(games) }), () => nulle('UNAVAILABLE'))
+    const id = m.player.id;
+    // Le rattrapage d'abord (un déblocage manqué apparaît obtenu ET part en
+    // notification), puis les agrégats et les succès retenus.
+    const succes = debloque(id).then((neufs) => { if (neufs.length) livre(id).catch(noteSucces); })
+      .then(() => store.achievements(id));
+    Promise.all([store.perGame(id), succes])
+      .then(([games, rows]) => send(ws, { type: 'stats', stats: { ...ST.summarize(games), achievements: AC.view(rows) } }), () => nulle('UNAVAILABLE'))
       .then(() => { ws.statsEnCours = false; });
+  }
+
+  // La page /games/ a AFFICHÉ ces notifications : on ne les renverra plus.
+  //   { action: 'achievements-seen', codes: ['hat-trick', …] }
+  // Ne débloque RIEN : seules des lignes existantes de CE joueur (désigné par
+  // son socket) passent de « à notifier » à « notifié ». Pas de réponse.
+  function onAchievementsSeen(ws, msg) {
+    const m = me(ws);
+    if (!m) return fail(ws, 'NOT_IN_SESSION');
+    if (!store || !verifies(m.session).has(m.player.id)) return;
+    const codes = AC.readSeen(msg.codes);
+    if (codes.length) store.markSeen(m.player.id, codes).catch(noteSucces);
   }
 
   function onMessage(ws, raw) {
@@ -805,6 +873,7 @@ function createHub(options = {}) {
     if (a === 'results') return onResults(ws, r.msg);
     if (a === 'finish') return onFinish(ws);
     if (a === 'stats') return onStats(ws);
+    if (a === 'achievements-seen') return onAchievementsSeen(ws, r.msg);
   }
 
   function connection(ws) {

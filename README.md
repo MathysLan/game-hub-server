@@ -132,6 +132,7 @@ renvoie `{ type }`, en JSON sur un seul socket.
 | `abort` | `drawId`, `reason`, `detail` | création/entrée impossible, ou annulation (hôte) |
 | `finish` | — | **hôte**, au salon (`lobby` / `debrief`) — termine la SOIRÉE pour tout le monde. ≠ `leave` |
 | `stats` | — | SES statistiques de joueur (désigné par son socket). Voir « Statistiques de joueur » |
+| `achievements-seen` | `codes[]` | ces notifications de succès ont été AFFICHÉES (page /games/) : le Hub ne les renverra plus. Ne débloque rien. Voir « Succès » |
 
 ### Serveur → client
 
@@ -139,7 +140,8 @@ renvoie `{ type }`, en JSON sur un seul socket.
 |---|---|
 | `created` | `you` (l'id de l'appelant), `stats` (ce Hub sait-il répondre à `stats` ?), `session` |
 | `joined` | `you`, `stats`, `session` |
-| `stats` | `stats` : `{ played, solo, wins, podiums, best, games[] }`, ou `null` + `reason` (`UNAVAILABLE` / `UNVERIFIED`) |
+| `stats` | `stats` : `{ played, solo, wins, podiums, best, games[], records, achievements[] }`, ou `null` + `reason` (`UNAVAILABLE` / `UNVERIFIED`) |
+| `achievement` | `unlocked[]` : `{ code, at, drawId }` — tes succès débloqués PAS ENCORE notifiés (après un classement, et à chaque entrée vérifiée) |
 | `session` | `session` — diffusé à tous à chaque changement |
 | `error` | `code`, `message` (`SESSION_CLOSED` d'une soirée terminée porte `finale` si l'on en faisait partie) |
 | `finale` | `finale` — la soirée est terminée : le podium figé, à tous les connectés. Le socket est ensuite fermé (4002) |
@@ -474,6 +476,42 @@ D'une soirée à l'autre : parties, victoires, podiums, meilleure place, par jeu
 - **Panne** : l'écriture est asynchrone, jamais attendue ; base injoignable →
   deux nouvelles tentatives, puis abandon (log). `stats` répond alors
   `UNAVAILABLE`, jamais un faux zéro. La soirée ne dépend jamais de la base.
+- **Records** (lot I) : `stats.records`, dérivés du même résumé (`records()`).
+
+## Succès (`src/achievements.js`, lot J)
+
+Dix succès, décidés par CE Hub à partir des parties de `hub_plays`. Aucun
+message client ne peut en débloquer un.
+
+- **Rejeu** : les parties du joueur, triées (`played_at`, `draw_id`), relues
+  une à une ; chaque succès est daté par la PREMIÈRE partie qui le rend vrai.
+  Tous sont monotones. Codes : `first-win`, `explorer`, `stalemate`,
+  `shared-throne`, `versatile`, `marathon`, `night-owl`, `hat-trick`,
+  `crowd-king`, `grand-slam` (conditions dans `achievements.js`).
+- **Définitions** : victoire = celle des statistiques ; partie compétitive = 2
+  classés ou plus (le solo ne compte que pour `explorer`) ; soirée = parties
+  compétitives consécutives, même code de session, ≤ 12 h entre deux ; série =
+  parmi TES parties compétitives enregistrées de la soirée (défaite ou nul du
+  Morpion la cassent, 1er ex æquo devant quelqu'un la continue) ; nuit =
+  00:00:00–04:59:59 heure de Paris ; Grand Chelem = les 7 jeux en ligne,
+  liste figée.
+- **Table `hub_achievements`** `(player_id, code, unlocked_at, draw_id,
+  notified_at)`, clé primaire `(player_id, code)` : `on conflict do nothing
+  returning code` rend EXACTEMENT les nouveaux (premier déblocage, une seule
+  fois, même si deux chemins se croisent). `notified_at` null = notification
+  due.
+- **Quand** : juste après les lignes d'un classement accepté (`debloque`), puis
+  envoi `achievement` aux sockets vérifiés du joueur ; à chaque entrée vérifiée
+  (`create` / `join` / reprise), rattrapage + envoi de ce qui attend
+  (`auRetour`) ; à chaque `stats`, rattrapage. Seule la page /games/ affiche et
+  accuse (`achievements-seen` → `notified_at`) ; la page d'un jeu ignore.
+- **Rattrapage silencieux** : le jour où la table naît, dans la même
+  transaction (verrou consultatif), les succès déjà mérités sont inscrits
+  comme déjà notifiés (`notified_at = unlocked_at`) : aucune notification
+  rétroactive, et un échec annule tout.
+- **Limite** (celle du score) : le classement passe par le navigateur de
+  l'hôte ; un hôte qui trafique sa page influence les succès liés au rang dans
+  SES parties.
 
 ## HTTP
 
@@ -499,7 +537,8 @@ plus parler à un serveur ancien — pas à chaque correctif.
 | `src/launch.js` | **le lancement** : états, validations, attente — pur | non |
 | `src/scores.js` | **le score de soirée** : places, validation, conversion — pur | non |
 | `src/stats.js` | **les statistiques de joueur** : définitions, clé, lignes à enregistrer — pur | non |
-| `src/store-pg.js` / `src/store-memory.js` | stockage des statistiques (Postgres / mémoire), même interface | Postgres / non |
+| `src/achievements.js` | **les succès** : définitions, rejeu, vue — pur | non |
+| `src/store-pg.js` / `src/store-memory.js` | stockage des statistiques et des succès (Postgres / mémoire), même interface | Postgres / non |
 | `src/prefs.js` | validation de prefs, caps, contrainte | non |
 | `src/catalog.js` | lecture et validation du manifest | HTTP (GET) |
 | `src/health.js` | santé des serveurs de jeu | HTTP (GET) |
@@ -533,6 +572,10 @@ node test-debrief.js   # 31 — retour de partie : session vide gardée pendant 
 node test-stats.js     # 50 — statistiques de joueur : définitions, stockage, protocole (clé, doublons,
                        #      parti, reconnexion, panne, solo, 9 joueurs) ; + 5 en SQL avec
                        #      TEST_DATABASE_URL (base de TEST, ses tables hub_* sont vidées)
+node test-achievements.js  # 78 — succès : définitions aux bornes (nuit, heure d'été, soirée,
+                       #      séries, ex æquo), rejeu, stockage, protocole (premier déblocage,
+                       #      accusé, reconnexion, joueur parti, panne, rien depuis un client) ;
+                       #      94 avec TEST_DATABASE_URL (dont le rattrapage silencieux)
 node test-e2e.js       # 26 — le vrai serveur, HTTP et tirage compris
 ```
 

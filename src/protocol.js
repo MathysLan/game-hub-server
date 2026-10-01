@@ -76,7 +76,9 @@ const ACTIONS = ['create', 'join', 'leave', 'prefs', 'caps', 'constraints', 'dra
   // Fin de soirée : l'hôte termine la session pour TOUT le monde. Ne porte rien.
   'finish',
   // Statistiques de joueur : SES agrégats, désigné par son socket. Ne porte rien.
-  'stats'];
+  'stats',
+  // Succès (lot J) : « ces notifications ont été affichées ». Ne débloque rien.
+  'achievements-seen'];
 
 function parse(raw) {
   if (typeof raw !== 'string') raw = String(raw);
