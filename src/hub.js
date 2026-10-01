@@ -763,7 +763,8 @@ function createHub(options = {}) {
 
   // Tes statistiques, et seulement les tiennes : le joueur est désigné par son
   // socket (me), jamais par le message, qui ne porte rien. Réponse :
-  //   { type: 'stats', stats: { played, solo, wins, podiums, best, games } }
+  //   { type: 'stats', stats: { played, solo, wins, podiums, best, games, records } }
+  // (`records` : stats.js → records(), dérivés du même résumé, lot I)
   //   { type: 'stats', stats: null, reason: 'UNAVAILABLE' | 'UNVERIFIED' }
   // UNAVAILABLE = pas de stockage, ou base injoignable ; UNVERIFIED = pas de
   // clé, ou une clé qui n'est pas celle enregistrée pour cet id. Une demande à

@@ -84,7 +84,41 @@ const tous = () => true;
   t('par jeu : le plus joué d\'abord ; les points ne sortent pas', s.games[0].gameId === 'passeur' && !JSON.stringify(s).includes('points'));
   const solo = ST.summarize(ST.perGame([{ gameId: 'precision', rank: 1, ranked: 1, behind: 0, points: 10 }]));
   t('que du solo : meilleure place absente (aucun adversaire), 0 victoire', solo.best === null && solo.wins === 0 && solo.played === 1 && solo.solo === 1);
-  t('aucune partie : un résumé vide (pas de liste de jeux)', same(ST.summarize([]), { played: 0, solo: 0, wins: 0, podiums: 0, best: null, games: [] }));
+  t('aucune partie : un résumé vide (pas de liste de jeux, pas de records)', same(ST.summarize([]), { played: 0, solo: 0, wins: 0, podiums: 0, best: null, games: [], records: null }));
+}
+
+// ═══════════════════════════════════════════════════════════ records (lot I)
+console.log('\nRecords personnels — dérivés du résumé (stats.js → records)\n');
+{
+  const P = (gameId, rank, ranked, behind) => ({ gameId, rank, ranked, behind, points: 0 });
+  const rec = (plays) => ST.summarize(ST.perGame(plays)).records;
+  t('A. aucune partie : records null (« Pas encore de record »)', ST.summarize([]).records === null && ST.records(null) === null && ST.records({ played: 0 }) === null);
+  const solo = rec([P('precision', 1, 1, 0), P('precision', 1, 1, 0)]);
+  t('B. que du solo : ni meilleure place, ni victoire, ni meilleur jeu ; le plus joué reste (Précision, 2)',
+    same(solo, { best: null, wins: null, mostPlayed: { games: ['precision'], played: 2 }, mostWins: null }), JSON.stringify(solo));
+  const une = rec([P('passeur', 1, 3, 2)]);
+  t('C/E. une victoire : meilleure place 1, 1 victoire, Le Passeur le plus joué et meilleur jeu',
+    same(une, { best: 1, wins: 1, mostPlayed: { games: ['passeur'], played: 1 }, mostWins: { games: ['passeur'], wins: 1 } }), JSON.stringify(une));
+  const plusieurs = rec([P('passeur', 1, 3, 2), P('passeur', 3, 4, 1), P('passeur', 2, 2, 0), P('passeur', 4, 4, 0),
+    P('precision', 1, 2, 1), P('precision', 1, 5, 4), P('precision', 1, 3, 2), P('morpion', 1, 2, 1)]);
+  t('D/F/G/K. plusieurs jeux : 5 victoires ; le plus joué = Le Passeur (4) ; le meilleur jeu = Précision (3 victoires), pas le plus joué',
+    same(plusieurs, { best: 1, wins: 5, mostPlayed: { games: ['passeur'], played: 4 }, mostWins: { games: ['precision'], wins: 3 } }), JSON.stringify(plusieurs));
+  const sansVictoire = rec([P('passeur', 2, 3, 1), P('morpion', 1, 2, 0)]);
+  t('sans victoire (2e, nul du Morpion) : meilleure place 1 (le nul), wins et meilleur jeu null — pas de « 0 victoire » en record',
+    same(sansVictoire, { best: 1, wins: null, mostPlayed: { games: ['morpion', 'passeur'], played: 1 }, mostWins: null }), JSON.stringify(sansVictoire));
+  const egal = rec([P('passeur', 1, 2, 1), P('passeur', 1, 2, 1), P('passeur', 1, 2, 1), P('passeur', 1, 2, 1), P('passeur', 2, 2, 0),
+    P('precision', 1, 4, 3), P('precision', 1, 4, 3), P('precision', 1, 4, 3), P('precision', 1, 4, 3), P('precision', 4, 4, 0), P('demicercle', 2, 3, 1)]);
+  t('H. égalité : Le Passeur et Précision, 5 parties et 4 victoires chacun → LES DEUX, aucun départage',
+    same(egal.mostPlayed, { games: ['passeur', 'precision'], played: 5 }) && same(egal.mostWins, { games: ['passeur', 'precision'], wins: 4 }), JSON.stringify(egal));
+  // I. Ex æquo dans une partie : les rangs du jeu tels quels (1, 1, 3 → deux victoires).
+  const seats = { p_a: 'a', p_b: 'b', p_c: 'c' };
+  const l = ST.playsFor(rows(['a', 1], ['b', 1], ['c', 3]), seats, tous).map((p) => Object.assign(p, { gameId: 'demicercle' }));
+  const ra = rec(l.filter((p) => p.playerId === 'p_a')), rb = rec(l.filter((p) => p.playerId === 'p_b')), rc = rec(l.filter((p) => p.playerId === 'p_c'));
+  t('I. ex æquo 1, 1, 3 : chacun des deux 1ers a sa victoire et son meilleur jeu ; le 3e, meilleure place 3, aucun meilleur jeu',
+    same(ra, rb) && ra.wins === 1 && same(ra.mostWins, { games: ['demicercle'], wins: 1 }) && rc.best === 3 && rc.wins === null && rc.mostWins === null);
+  const s1 = ST.summarize(ST.perGame([P('passeur', 1, 3, 2), P('passeur', 2, 3, 1)]));
+  t('records = le résumé : best et wins identiques à ceux des statistiques', s1.records.best === s1.best && s1.records.wins === s1.wins);
+  t('records : aucun point, aucun identifiant de joueur', !/points|player/i.test(JSON.stringify(plusieurs)) && !/points|player/i.test(JSON.stringify(egal)));
 }
 {
   t('clé : 32 à 64 caractères [A-Za-z0-9_-], rien d\'autre', !!ST.readKey('a'.repeat(32)) && !!ST.readKey('Az09_-'.repeat(8)) && !ST.readKey('a'.repeat(31))
@@ -202,7 +236,7 @@ async function protocole() {
   t('joined : annoncé aussi aux invités (et à un client sans clé)', b.accueil.stats === true && x.accueil.type === 'joined' && x.accueil.stats === true);
   t('la clé ne part JAMAIS dans l\'état public de la session', !JSON.stringify(a.last()).includes(cle('b')) && !JSON.stringify(a.msgs).includes('kbkbkb'));
   const s0 = await a.stats();
-  t('A. nouveau joueur : aucune partie, un résumé vide', same(S(s0), { played: 0, solo: 0, wins: 0, podiums: 0, best: null, games: [] }), JSON.stringify(s0));
+  t('A. nouveau joueur : aucune partie, un résumé vide, aucun record', same(S(s0), { played: 0, solo: 0, wins: 0, podiums: 0, best: null, games: [], records: null }), JSON.stringify(s0));
   t('sans clé : UNVERIFIED (la soirée continue, sans statistiques)', (await x.stats()).reason === 'UNVERIFIED');
 
   // B–F. Une partie à cinq : 1 Ana, 2 Bob, 3 Cam, 4 Dan, 5 Xav.
@@ -213,6 +247,9 @@ async function protocole() {
   t('D. 2e place : 1 podium, pas de victoire, meilleure place 2', same(resume(sb), [1, 0, 1, 2]), JSON.stringify(sb));
   t('E. 3e place : 1 podium', same(resume(sc), [1, 0, 1, 3]));
   t('F. 4e place : ni victoire ni podium, meilleure place 4', same(resume(sd), [1, 0, 0, 4]));
+  t('records, dans la MÊME réponse stats : Ana (1re) meilleure place 1, 1 victoire, Le Passeur partout',
+    same(sa.records, { best: 1, wins: 1, mostPlayed: { games: ['passeur'], played: 1 }, mostWins: { games: ['passeur'], wins: 1 } }), JSON.stringify(sa.records));
+  t('records : Dan (4e) meilleure place 4, ni victoire ni meilleur jeu', same(sd.records, { best: 4, wins: null, mostPlayed: { games: ['passeur'], played: 1 }, mostWins: null }), JSON.stringify(sd.records));
   t('le score de soirée n\'a pas changé de règle (5 classés : 50 / 40 / 30 / 20 / 10)',
     same(a.last().scores, { p_ana1: 50, p_bob1: 40, p_cam1: 30, p_dan1: 20, p_xav1: 10 }), JSON.stringify(a.last().scores));
   // Xav (sans clé) a joué sans statistiques ; il s'en va (sinon les parties
@@ -228,16 +265,17 @@ async function protocole() {
   a.send({ action: 'results', drawId: dernier, gameId: 'passeur', results: a.derniers });
   const refus = await a.waitFor((y) => y.type === 'error', 2000, m);
   t('I. results renvoyé : refusé (le lancement est terminé), aucune ligne de plus', ['RESULTS_ALREADY', 'LAUNCH_MISMATCH', 'NOT_LAUNCHING'].includes(refus.code) && store._size() === lignes, refus.code);
+  t('M. doublon (tirage, joueur) : records inchangés', same(S(await a.stats()).records, sa.records));
 
   // J + L. Reconnexion de Bob, sous un AUTRE pseudo : mêmes statistiques.
   await b.fermer();
   const b2 = await entre('Bobby', 'p_bob1', code, cle('b'));
-  t('J/L. reconnexion (même id, même clé, pseudo changé) : mêmes statistiques', same(S(await b2.stats()), sb));
+  t('J/L. reconnexion (même id, même clé, pseudo changé) : mêmes statistiques, mêmes records', same(S(await b2.stats()), sb) && !!sb.records);
 
   // Quelqu'un reprend l'id de Bob avec une AUTRE clé : ni lecture ni écriture.
   const intrus = await entre('Bob', 'p_bob1', code, cle('z'));
   const vu = await intrus.stats();
-  t('clé d\'un autre : UNVERIFIED — les stats de Bob ne se lisent pas', vu.stats === null && vu.reason === 'UNVERIFIED');
+  t('clé d\'un autre : UNVERIFIED — ni les stats ni les records de Bob ne se lisent', vu.stats === null && vu.reason === 'UNVERIFIED' && !JSON.stringify(vu).includes('records'));
   await intrus.fermer();
   const b3 = await entre('Bob', 'p_bob1', code, cle('b'));
   await b3.until((s) => s.players.find((p) => p.id === 'p_bob1').connected, 2000);
@@ -256,6 +294,11 @@ async function protocole() {
   t('K. plusieurs jeux : ventilées par jeu (Ana : Passeur 1, Demi-Cercle 1)',
     same(ga.games.map((g) => [g.gameId, g.played, g.wins]).sort(), [['demicercle', 1, 1], ['passeur', 1, 1]]) && ga.played === 2, JSON.stringify(ga.games));
   t('K. Dan : 4e deux fois, jamais au podium', same(resume(gd), [2, 0, 0, 4]));
+  t('H/I. égalité entre jeux : Ana, 1 partie et 1 victoire au Passeur ET au Demi-Cercle → les deux, sans départage',
+    same(ga.records, { best: 1, wins: 2, mostPlayed: { games: ['demicercle', 'passeur'], played: 1 }, mostWins: { games: ['demicercle', 'passeur'], wins: 1 } }), JSON.stringify(ga.records));
+  t('I. ex æquo 1er : Bob a sa victoire au Demi-Cercle (son meilleur jeu)', same(gb.records.mostWins, { games: ['demicercle'], wins: 1 }) && gb.records.best === 1, JSON.stringify(gb.records));
+  const camRec = ST.summarize(cam).records;
+  t('J. joueur parti : ses records existent aussi (meilleure place 3, aucune victoire)', camRec.best === 3 && camRec.wins === null && camRec.mostWins === null, JSON.stringify(camRec));
 
   // M. Stockage injoignable : la soirée continue, le score de soirée est juste,
   // et la ligne arrive dès que la base revient (nouvelle tentative).
@@ -271,6 +314,8 @@ async function protocole() {
   t('M. la base revient : la partie est enregistrée par une nouvelle tentative, une seule fois', store._size() === avant + 3, `${avant} → ${store._size()}`);
   const pa = S(await a.stats());
   t('M. … et apparaît dans les stats (Précision : 1 partie, 2e)', pa.played === 3 && same(pa.games.find((g) => g.gameId === 'precision').best, 2));
+  t('M. … et dans les records (3 jeux à égalité, 1 partie chacun ; victoires inchangées : 2)',
+    same(pa.records.mostPlayed, { games: ['demicercle', 'passeur', 'precision'], played: 1 }) && pa.records.wins === 2, JSON.stringify(pa.records));
 
   // Solo : une partie, pas une victoire, pas de meilleure place.
   const solo = await entre('Sol', 'p_sol1', null, cle('s'));
@@ -278,6 +323,8 @@ async function protocole() {
   await partie(solo, [], 'precision', { Sol: 1 });
   const ss = S(await solo.stats());
   t('solo : 1 partie « dont 1 en solo », 0 victoire, 0 podium, pas de meilleure place', same([ss.played, ss.solo, ss.wins, ss.podiums, ss.best], [1, 1, 0, 0, null]), JSON.stringify(ss));
+  t('B. solo : aucun record compétitif (best, wins, meilleur jeu à null), le plus joué = Précision',
+    same(ss.records, { best: null, wins: null, mostPlayed: { games: ['precision'], played: 1 }, mostWins: null }), JSON.stringify(ss.records));
 
   // 9 joueurs dans une même partie.
   const n9 = [solo];
@@ -286,7 +333,10 @@ async function protocole() {
   await partie(solo, n9.slice(1), 'passeur', Object.fromEntries(n9.map((c2, i) => [c2.nom, i + 1])));
   const s4 = S(await n9[3].stats()), s9 = S(await n9[8].stats()), s3 = S(await n9[2].stats());
   t('9 joueurs : 3e au podium ; 4e et 9e ni victoire ni podium', s3.podiums === 1 && s4.podiums === 0 && s4.wins === 0 && s9.best === 9 && s9.podiums === 0);
-  t('9 joueurs : le solo et la partie à 9 sont bien séparés pour Sol (2 parties, 1 victoire, 1 solo)', same(resume(S(await solo.stats())), [2, 1, 1, 1]));
+  const sol2 = S(await solo.stats());
+  t('9 joueurs : le solo et la partie à 9 sont bien séparés pour Sol (2 parties, 1 victoire, 1 solo)', same(resume(sol2), [2, 1, 1, 1]));
+  t('records : le solo ne fait pas la victoire — meilleur jeu de Sol = Le Passeur (la partie à 9), pas Précision',
+    same(sol2.records.mostWins, { games: ['passeur'], wins: 1 }) && sol2.records.best === 1, JSON.stringify(sol2.records));
 
   // Un Hub SANS stockage : la soirée marche comme avant, les stats le disent.
   const z = await entre('Zoé', 'p_zoe1', null, cle('z'), PORT + 1);
@@ -307,6 +357,9 @@ async function protocole() {
   t('mémoire : agrégats par jeu (morpion : nul → 0 victoire, 1 podium ; passeur : 1 victoire ; précision : solo)',
     same(mem.map((g) => [g.gameId, g.played, g.solo, g.wins, g.podiums, g.best]),
       [['morpion', 1, 0, 0, 1, 1], ['passeur', 1, 0, 1, 1, 1], ['precision', 1, 1, 0, 0, null]]), JSON.stringify(mem));
+  t('mémoire : records (égalité à 1 partie sur 3 jeux ; meilleur jeu Le Passeur, seule victoire)',
+    same(ST.summarize(mem).records, { best: 1, wins: 1, mostPlayed: { games: ['morpion', 'passeur', 'precision'], played: 1 }, mostWins: { games: ['passeur'], wins: 1 } }),
+    JSON.stringify(ST.summarize(mem).records));
   const enPanne = createMemoryStore({ down: () => true });
   let jette = false; try { await enPanne.record('d', 'C', 'g', []); } catch (_) { jette = true; }
   t('mémoire : une base injoignable JETTE (le Hub le traite, voir M)', jette);
@@ -320,6 +373,7 @@ async function protocole() {
     await brut.query('drop table if exists hub_plays; drop table if exists hub_players;');
     const sql = await scenarioStore(pg, 'postgres');
     t('postgres : les agrégats SQL = ceux de stats.js (mémoire), champ par champ', same(sql, mem), JSON.stringify(sql));
+    t('postgres : les MÊMES records qu\'en mémoire', same(ST.summarize(sql).records, ST.summarize(mem).records), JSON.stringify(ST.summarize(sql).records));
     const vide = await pg.perGame('p_personne');
     t('postgres : un id sans partie → aucune ligne', same(vide, []));
     await brut.query('drop table if exists hub_plays; drop table if exists hub_players;');

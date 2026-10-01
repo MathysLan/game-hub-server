@@ -79,19 +79,41 @@ function perGame(plays) {
   return Object.values(par);
 }
 
-// Le total, à partir des agrégats par jeu. `null` = aucune partie : le client
-// montre « Aucune partie jouée », pas une rangée de zéros.
+// Le total, à partir des agrégats par jeu. Aucune partie : des zéros ici, mais
+// le client montre « Aucune partie jouée », pas une rangée de zéros.
 function summarize(games) {
   const jeux = (games || []).filter((g) => g && g.played > 0)
     .sort((a, b) => b.played - a.played || (a.gameId < b.gameId ? -1 : 1));
-  if (!jeux.length) return { played: 0, solo: 0, wins: 0, podiums: 0, best: null, games: [] };
+  if (!jeux.length) return { played: 0, solo: 0, wins: 0, podiums: 0, best: null, games: [], records: null };
   const somme = (k) => jeux.reduce((s, g) => s + g[k], 0);
   const bests = jeux.map((g) => g.best).filter((b) => b != null);
-  return {
+  const s = {
     played: somme('played'), solo: somme('solo'), wins: somme('wins'), podiums: somme('podiums'),
     best: bests.length ? Math.min(...bests) : null,
     games: jeux.map((g) => ({ gameId: g.gameId, played: g.played, solo: g.solo, wins: g.wins, podiums: g.podiums, best: g.best })),
   };
+  s.records = records(s);
+  return s;
 }
 
-module.exports = { KEY_RE, readKey, hashKey, playsFor, perGame, summarize, isSolo, isWin, isPodium };
+// RECORDS PERSONNELS (lot I, portfolio, 2026-10-01) — dérivés du résumé
+// ci-dessus, donc des MÊMES lignes et des MÊMES définitions : aucune table,
+// aucune requête de plus, et mémoire = Postgres par construction.
+//   best        meilleure place à plusieurs (= résumé ; null : que du solo) ;
+//   wins        victoires (= résumé ; null tant qu'il n'y en a aucune) ;
+//   mostPlayed  { games, played } : le(s) jeu(x) le(s) plus joué(s), solo compris ;
+//   mostWins    { games, wins } : le(s) jeu(x) aux plus de victoires (null : aucune).
+// ⚠️ ÉGALITÉ = TOUS les jeux à égalité dans `games` (ordre du résumé : le plus
+// joué, puis l'id) : on ne départage jamais. Un record absent vaut null — le
+// client ne montre pas « 0 victoire » comme un record. `null` en entier :
+// aucune partie.
+function records(s) {
+  if (!s || !s.played) return null;
+  const tete = (k) => {
+    const max = Math.max(...s.games.map((g) => g[k]));
+    return max > 0 ? { games: s.games.filter((g) => g[k] === max).map((g) => g.gameId), [k]: max } : null;
+  };
+  return { best: s.best, wins: s.wins || null, mostPlayed: tete('played'), mostWins: tete('wins') };
+}
+
+module.exports = { KEY_RE, readKey, hashKey, playsFor, perGame, summarize, records, isSolo, isWin, isPodium };
