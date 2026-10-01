@@ -78,7 +78,9 @@ const ACTIONS = ['create', 'join', 'leave', 'prefs', 'caps', 'constraints', 'dra
   // Statistiques de joueur : SES agrégats, désigné par son socket. Ne porte rien.
   'stats',
   // Succès (lot J) : « ces notifications ont été affichées ». Ne débloque rien.
-  'achievements-seen'];
+  'achievements-seen',
+  // Profil public (lot K) : un joueur de TA session, dont la clé y a été vérifiée.
+  'public-profile'];
 
 function parse(raw) {
   if (typeof raw !== 'string') raw = String(raw);

@@ -132,15 +132,17 @@ renvoie `{ type }`, en JSON sur un seul socket.
 | `abort` | `drawId`, `reason`, `detail` | création/entrée impossible, ou annulation (hôte) |
 | `finish` | — | **hôte**, au salon (`lobby` / `debrief`) — termine la SOIRÉE pour tout le monde. ≠ `leave` |
 | `stats` | — | SES statistiques de joueur (désigné par son socket). Voir « Statistiques de joueur » |
+| `public-profile` | `playerId` | le profil PUBLIC d'un joueur de TA session, dont la clé y a été vérifiée. Voir « Profils publics » |
 | `achievements-seen` | `codes[]` | ces notifications de succès ont été AFFICHÉES (page /games/) : le Hub ne les renverra plus. Ne débloque rien. Voir « Succès » |
 
 ### Serveur → client
 
 | `type` | Charge |
 |---|---|
-| `created` | `you` (l'id de l'appelant), `stats` (ce Hub sait-il répondre à `stats` ?), `session` |
-| `joined` | `you`, `stats`, `session` |
+| `created` | `you` (l'id de l'appelant), `stats` (ce Hub sait-il répondre à `stats` ?), `profiles` (… et à `public-profile` ?), `session` |
+| `joined` | `you`, `stats`, `profiles`, `session` |
 | `stats` | `stats` : `{ played, solo, wins, podiums, best, games[], records, achievements[] }`, ou `null` + `reason` (`UNAVAILABLE` / `UNVERIFIED`) |
+| `public-profile` | `playerId`, `profile` (`{ name, avatar, present, stats }` ou `null`), `reason` (`null`, `NOT_FOUND`, `UNVERIFIED`, `UNAVAILABLE`, `BUSY`) |
 | `achievement` | `unlocked[]` : `{ code, at, drawId }` — tes succès débloqués PAS ENCORE notifiés (après un classement, et à chaque entrée vérifiée) |
 | `session` | `session` — diffusé à tous à chaque changement |
 | `error` | `code`, `message` (`SESSION_CLOSED` d'une soirée terminée porte `finale` si l'on en faisait partie) |
@@ -513,6 +515,29 @@ message client ne peut en débloquer un.
   l'hôte ; un hôte qui trafique sa page influence les succès liés au rang dans
   SES parties.
 
+## Profils publics (lot K)
+
+Voir le profil d'un AUTRE joueur de sa soirée : `{ action: 'public-profile',
+playerId }` (`onPublicProfile`, `src/hub.js`).
+
+- ⚠️ **Un player.id seul n'ouvre RIEN** (les ids circulent dans l'état de
+  chaque session). Trois conditions : le demandeur est dans une session (son
+  socket) ; la cible est dans CETTE session, présente ou partie
+  (`session.departed`, lu par `hasOwnProperty`) ; la clé de la cible a été
+  vérifiée DANS CETTE session (`verifies(session)`). Entrer avec l'id d'Alice
+  sans sa clé (ou avec une autre) ne rend pas « Alice » consultable :
+  `UNVERIFIED`, identité seule.
+- **Pas d'oracle** : un id inventé et un joueur d'une autre soirée reçoivent
+  la même réponse, `NOT_FOUND`. Les champs ajoutés au message (`code`…) sont
+  ignorés : seul le socket désigne la soirée.
+- **Contenu** : l'identité que le Hub connaît (nom, avatar, présent / parti),
+  le résumé des statistiques (par jeu, records), les succès `{ code,
+  unlocked, at }`. Jamais : la clé, son empreinte, un `drawId`,
+  `notified_at`, les points, le code de session.
+- **Lecture seule** : rien n'est débloqué ni notifié pour la cible. Une
+  demande à la fois par socket (`BUSY`). Sans stockage : `profiles: false`
+  dans `created` / `joined`, et `UNAVAILABLE`.
+
 ## HTTP
 
 ```
@@ -572,6 +597,9 @@ node test-debrief.js   # 31 — retour de partie : session vide gardée pendant 
 node test-stats.js     # 50 — statistiques de joueur : définitions, stockage, protocole (clé, doublons,
                        #      parti, reconnexion, panne, solo, 9 joueurs) ; + 5 en SQL avec
                        #      TEST_DATABASE_URL (base de TEST, ses tables hub_* sont vidées)
+node test-public-profile.js  # 27 — profils publics : soi, même soirée, autre soirée, ids forgés
+                       #      et pièges (__proto__, constructor), usurpation d'id sans / avec fausse
+                       #      clé, joueur sans clé, parti, panne, Hub sans stockage, aucune fuite
 node test-achievements.js  # 78 — succès : définitions aux bornes (nuit, heure d'été, soirée,
                        #      séries, ex æquo), rejeu, stockage, protocole (premier déblocage,
                        #      accusé, reconnexion, joueur parti, panne, rien depuis un client) ;

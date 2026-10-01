@@ -311,7 +311,8 @@ function createHub(options = {}) {
 
     // `stats` : ce Hub sait-il répondre à `{ action: 'stats' }` ? Un client
     // ne le demande qu'à un Hub qui l'annonce (un Hub d'avant ne l'annonce pas).
-    send(ws, { type: 'created', you: r.player.id, stats: !!store, session: publicOf(session) });
+    // `profiles` (lot K) : même logique pour `public-profile`.
+    send(ws, { type: 'created', you: r.player.id, stats: !!store, profiles: !!store, session: publicOf(session) });
     chargeCatalogue();
   }
 
@@ -346,7 +347,7 @@ function createHub(options = {}) {
       attach(ws, session, connu);
       verifieCle(ws, session, connu.id, msg.player.key);
       S.electHost(session);
-      send(ws, { type: 'joined', you: connu.id, stats: !!store, session: publicOf(session) });
+      send(ws, { type: 'joined', you: connu.id, stats: !!store, profiles: !!store, session: publicOf(session) });
       return broadcastSession(session);
     }
 
@@ -354,7 +355,7 @@ function createHub(options = {}) {
     if (add.error) return fail(ws, add.error);
     attach(ws, session, add.player);
     verifieCle(ws, session, add.player.id, msg.player.key);
-    send(ws, { type: 'joined', you: add.player.id, stats: !!store, session: publicOf(session) });
+    send(ws, { type: 'joined', you: add.player.id, stats: !!store, profiles: !!store, session: publicOf(session) });
     broadcastSession(session);
   }
 
@@ -837,6 +838,46 @@ function createHub(options = {}) {
       .then(() => { ws.statsEnCours = false; });
   }
 
+  // ── Profil PUBLIC d'un joueur de TA soirée (lot K) ────────────────────────
+  //   { action: 'public-profile', playerId }
+  // ⚠️ UN PLAYER ID SEUL N'OUVRE RIEN : les ids sont publics (ils circulent
+  // dans l'état de chaque session). Trois conditions, toutes vérifiées ici :
+  //   1. le DEMANDEUR est dans une session (désigné par son socket) ;
+  //   2. la CIBLE est dans CETTE session — joueur présent (même absent pendant
+  //      sa grâce) ou parti (`session.departed`) ;
+  //   3. la CLÉ de la cible a été vérifiée DANS CETTE session : quelqu'un qui
+  //      entre avec l'id d'Alice sans sa clé ne rend pas « Alice » consultable.
+  // Réponse : { type: 'public-profile', playerId, profile, reason }
+  //   profile = { name, avatar, present, stats } — identité telle que le HUB la
+  //   connaît (jamais le profil local), stats = { played, solo, wins, podiums,
+  //   best, games, records, achievements: [{ code, unlocked, at }] } ou null ;
+  //   reason  = null | 'NOT_FOUND' (pas dans ta session : même réponse pour un
+  //   id inventé ou d'une autre soirée) | 'UNVERIFIED' (clé non vérifiée : on
+  //   rend l'identité, pas de stats) | 'UNAVAILABLE' (pas de stockage, base
+  //   injoignable) | 'BUSY' (une demande à la fois par socket).
+  // Lecture SEULE : aucun déblocage, aucune notification pour la cible.
+  // Jamais : la clé, son empreinte, un drawId, notified_at.
+  function onPublicProfile(ws, msg) {
+    const m = me(ws);
+    if (!m) return fail(ws, 'NOT_IN_SESSION');
+    const id = typeof msg.playerId === 'string' && msg.playerId.length <= 64 ? msg.playerId : null;
+    const repond = (profile, reason) => send(ws, { type: 'public-profile', playerId: id, profile, reason: reason || null });
+    const present = id ? S.getPlayer(m.session, id) : null;
+    const parti = id && !present && Object.prototype.hasOwnProperty.call(m.session.departed || {}, id) ? m.session.departed[id] : null;
+    if (!present && !parti) return repond(null, 'NOT_FOUND');
+    const qui = present || parti;
+    const identite = { name: qui.name, avatar: qui.avatar, present: !!present };
+    if (!store) return repond({ ...identite, stats: null }, 'UNAVAILABLE');
+    if (!verifies(m.session).has(id)) return repond({ ...identite, stats: null }, 'UNVERIFIED');
+    if (ws.profilEnCours) return repond(null, 'BUSY');
+    ws.profilEnCours = true;
+    Promise.all([store.perGame(id), store.achievements(id)])
+      .then(([games, rows]) => repond({ ...identite, stats: { ...ST.summarize(games),
+        achievements: AC.view(rows).map((a) => (a.unlocked ? { code: a.code, unlocked: true, at: a.at } : { code: a.code, unlocked: false })) } }),
+      () => repond({ ...identite, stats: null }, 'UNAVAILABLE'))
+      .then(() => { ws.profilEnCours = false; });
+  }
+
   // La page /games/ a AFFICHÉ ces notifications : on ne les renverra plus.
   //   { action: 'achievements-seen', codes: ['hat-trick', …] }
   // Ne débloque RIEN : seules des lignes existantes de CE joueur (désigné par
@@ -874,6 +915,7 @@ function createHub(options = {}) {
     if (a === 'finish') return onFinish(ws);
     if (a === 'stats') return onStats(ws);
     if (a === 'achievements-seen') return onAchievementsSeen(ws, r.msg);
+    if (a === 'public-profile') return onPublicProfile(ws, r.msg);
   }
 
   function connection(ws) {
