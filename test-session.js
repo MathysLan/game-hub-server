@@ -122,7 +122,7 @@ console.log('Modèle de session — hors réseau\n');
   S.addPlayer(plein, { id: 'p_0002', name: 'y', avatar: { kind: 'emoji', emoji: '🦊' } });
   t('session pleine refusée',
     S.addPlayer(plein, { id: 'p_0003', name: 'z', avatar: { kind: 'emoji', emoji: '🦊' } }).error === 'SESSION_FULL');
-  t('le plafond par défaut est 12 (le plus permissif des sept jeux)', S.MAX_PLAYERS === 12);
+  t('le plafond par défaut est 16 (le plus permissif des jeux : Roquette Party)', S.MAX_PLAYERS === 16);
 }
 
 // ───────────────────────────────────────────────────────── état public

@@ -49,11 +49,12 @@ function backFromGame(s) {
   return s.state === 'debrief' && !!s.launch && s.launch.stage === 'ended';
 }
 
-// 12 et pas 8 : c'est le MAX_PLAYERS de precision-server, le plus permissif des
-// sept (relevé dans src/server.js). Plafonner le Hub à 8 interdirait une
-// session de dix amis qui veulent jouer à Precision. Le filtre par jeu viendra
-// du manifest, à la phase du randomizer — pas d'ici.
-const MAX_PLAYERS = 12;
+// 16 : le plus grand MAX_PLAYERS des jeux du portfolio (roquette-server,
+// Roquette Party ; precision-server s'arrête à 12). Le plafond du Hub est
+// celui du jeu le plus permissif ; chaque jeu garde le sien dans le manifest,
+// et le tirage écarte seul un jeu trop petit pour le groupe (engine.js,
+// TOO_MANY). Le classement de soirée accepte déjà 16 lignes (scores.js).
+const MAX_PLAYERS = 16;
 
 // Un joueur déconnecté n'est pas un joueur parti : un téléphone qui se
 // verrouille, un tunnel, un rechargement. On le garde visible « absent » le
