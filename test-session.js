@@ -67,6 +67,20 @@ console.log('Modèle de session — hors réseau\n');
   // plein milieu par les serveurs de jeu. On le refuse ici aussi.
   t('emoji à ZWJ refusé (8 unités UTF-16)',
     !!ident.readPlayer({ ...bon, avatar: { emoji: '👨‍👩‍👧' } }).error);
+  // Pseudo nettoyé CÔTÉ SERVEUR, mêmes règles que GameProfile.cleanName() :
+  // un client forgé ne doit pas pouvoir afficher ces caractères chez les autres.
+  const nom = (n) => { const r = ident.readPlayer({ ...bon, name: n }); return r.player ? r.player.name : null; };
+  t('forçage RTL (U+202E) retiré', nom('‮Alice') === 'Alice', JSON.stringify(nom('‮Alice')));
+  t('isolats de sens (U+2066–2069) et LRM/RLM/ALM retirés',
+    nom('⁦Al‎ic‏؜e⁩') === 'Al ic e', JSON.stringify(nom('⁦Al‎ic‏؜e⁩')));
+  t('retour à la ligne et tabulation → une espace', nom('Al\nice\tB') === 'Al ice B', JSON.stringify(nom('Al\nice\tB')));
+  t('contrôles C0/C1, U+200B et U+FEFF retirés', nom('\u0000A\u0085l​i﻿ce\u007f') === 'A l i ce');
+  t('espaces multiples réduits', nom('  Al    ice  ') === 'Al ice');
+  t('pseudo fait seulement d\'invisibles refusé', nom('‮​⁦\n') === null);
+  t('le ZWJ reste (emoji composé)', nom('Bob 👨‍👩‍👧') === 'Bob 👨‍👩‍👧');
+  const coupe = nom('ABCDEFGHIJKLMNO🦊');
+  t('borne 16 sans couper un emoji en deux', coupe === 'ABCDEFGHIJKLMNO', JSON.stringify(coupe));
+  t('les invisibles ne comptent pas dans les 16', nom('‮'.repeat(10) + 'ABCDEFGHIJKLMNOP') === 'ABCDEFGHIJKLMNOP');
   t('avatar sans emoji refusé', !!ident.readPlayer({ ...bon, avatar: {} }).error);
 
   const img = 'data:image/webp;base64,' + 'A'.repeat(200);

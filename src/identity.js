@@ -39,13 +39,33 @@ const validEmoji = (e) =>
 const validImage = (s) =>
   typeof s === 'string' && s.length <= MAX_IMAGE_CHARS && IMG_RE.test(s);
 
+// Le pseudo, nettoyé avec les MÊMES règles que `GameProfile.cleanName()`
+// (games/shared/game-profile.js, portfolio). Le client le fait déjà, mais un
+// client forgé passe à côté : c'est ici que ça compte, puisque le Hub diffuse le
+// nom à toute la session. Affiché partout en textContent (aucun HTML ne passe) ;
+// restent les caractères qui cassent la MISE EN PAGE sans rien afficher :
+//  - contrôles (retour à la ligne, tabulation, C0 / C1) ;
+//  - forçages de sens d'écriture (U+202A–202E, U+2066–2069, LRM / RLM / ALM) :
+//    un « ‮ » en tête retournait « Alice (toi) » dans le score ;
+//  - espaces invisibles (U+200B, U+FEFF) et suites d'espaces.
+// Le ZWJ (U+200D) reste : il soude les emojis composés. Puis la borne de 16
+// unités UTF-16, sans couper un emoji en deux (une moitié de paire isolée
+// s'afficherait « � »).
+const INVISIBLES = /[\u0000-\u001f\u007f-\u009f؜​‎‏‪-‮⁦-⁩﻿]/g;
+
+function cleanName(s) {
+  let t = String(s == null ? '' : s).replace(INVISIBLES, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_NAME);
+  if (/[\ud800-\udbff]$/.test(t)) t = t.slice(0, -1);
+  return t.trim();
+}
+
 // Rend soit un joueur propre, soit une raison de refus. Jamais d'exception :
 // un client bavard ne doit pas faire tomber le serveur.
 function readPlayer(raw) {
   if (!raw || typeof raw !== 'object') return { error: 'joueur manquant' };
   if (!validId(raw.id)) return { error: 'identifiant de joueur invalide' };
 
-  const name = String(raw.name == null ? '' : raw.name).trim().slice(0, MAX_NAME);
+  const name = cleanName(raw.name);
   // Un pseudo vide passerait ici mais serait refusé par quatre serveurs de jeu
   // sur six (« il faut un pseudo »). Autant le dire tout de suite, au moment où
   // le joueur peut encore corriger, plutôt qu'au lancement de la partie.
@@ -67,5 +87,5 @@ function readPlayer(raw) {
 
 module.exports = {
   MAX_NAME, MAX_EMOJI, MAX_IMAGE_CHARS,
-  validId, validEmoji, validImage, readPlayer,
+  validId, validEmoji, validImage, cleanName, readPlayer,
 };
